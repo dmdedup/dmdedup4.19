@@ -754,6 +754,7 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	dc->logical_block_counter = logical_block_counter;
 	dc->physical_block_counter = physical_block_counter;
 
+	dc->gc_counter = 0;
 	dc->writes = 0;
 	dc->dupwrites = 0;
 	dc->uniqwrites = 0;
@@ -864,9 +865,9 @@ static void dm_dedup_status(struct dm_target *ti, status_type_t status_type,
 			MAJOR(dc->metadata_dev->bdev->bd_dev),
 			MINOR(dc->metadata_dev->bdev->bd_dev));
 
-		DMEMIT("%llu %llu %llu %llu %llu %llu",
+		DMEMIT("%llu %llu %llu %llu %llu %llu %llu",
 			dc->writes, dc->uniqwrites, dc->dupwrites,
-			dc->reads_on_writes, dc->overwrites, dc->newwrites);
+			dc->reads_on_writes, dc->overwrites, dc->newwrites, dc->gc_counter);
 		break;
 	case STATUSTYPE_TABLE:
 		DMEMIT("%s %s %u %s %s %u",
@@ -897,6 +898,7 @@ static int cleanup_hash_pbn(void *key, int32_t ksize, void *value,
 			goto out_dec_refcount;
 
 		dc->physical_block_counter -= 1;
+		dc->gc_counter++;
 	}
 
 	goto out;

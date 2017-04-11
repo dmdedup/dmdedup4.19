@@ -64,6 +64,7 @@ struct dedup_config {
 
 	uint64_t logical_block_counter;	/* Total number of used LBNs */
 	uint64_t physical_block_counter;/* Total number of allocated PBNs */
+	uint64_t gc_counter; /*Total number of garbage collected blocks */
 
 	uint64_t	writes;		/* total number of writes */
 	uint64_t	dupwrites;

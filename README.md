@@ -146,7 +146,8 @@ returned by dmsetup status will contain the following values in the order:
 
 <name> <start> <end> <type> \
 <dtotal> <dfree> <dused> <dactual> <dblock> <ddisk> <mddisk> \
-<writes><uniqwrites> <dupwrites> <readonwrites> <overwrites> <newwrites>
+<writes><uniqwrites> <dupwrites> <readonwrites> <overwrites> \
+<newwrites> <gccounter>
 
 <name>, <start>, <end>, and <type> are generic fields printed by dmsetup tool
 for any target.
@@ -167,6 +168,7 @@ for any target.
 		 written before at least once
 <newwrites>    - the number of writes to a logical address that was not written
 		 before even once
+<gccounter>    - total number of blocks garbage collected
 
 To compute deduplication ratio one needs to device dactual by dused.
 
