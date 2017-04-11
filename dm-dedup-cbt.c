@@ -761,6 +761,59 @@ repeat:
 	}
 }
 
+static int kvs_iterate_sparse_cowbtree(struct kvstore *kvs,
+                        int (*fn)(void *key, int32_t ksize, void *value,int32_t vsize, void *data),
+                        void *dc)
+{
+
+	struct kvstore_cbt *kvcbt = NULL;
+	char *entry, *key, *value;
+	int r;
+	dm_block_t lowest, highest;
+
+	kvcbt = container_of(kvs, struct kvstore_cbt, ckvs);
+
+	entry = kmalloc(kvs->ksize + kvs->vsize, GFP_NOIO);
+	key = kmalloc(kvs->ksize, GFP_NOIO);
+	value = kmalloc(kvs->vsize, GFP_NOIO);
+
+	//get the lowest and highest keys in the key value store
+	r = dm_btree_find_lowest_key(&(kvcbt->info), kvcbt->root, &lowest);
+	if(r <= 0)
+		goto out_kvs_iterate;
+
+	r = dm_btree_find_highest_key(&(kvcbt->info), kvcbt->root, &highest);
+	if(r <= 0)
+		goto out_kvs_iterate;
+
+	while(lowest <= highest){
+
+		//get the next entry entry in the kvs store
+		r = dm_btree_lookup_next(&(kvcbt->info), kvcbt->root, &lowest, &lowest, (void *)entry);
+
+		lowest++;
+		if(r)
+			continue;
+
+		//split the key and value seperately
+		memcpy(key, entry, kvs->ksize);
+		memcpy(value, (void *)(entry + kvs->ksize), kvs->vsize);
+
+		//call the cleanup callback function
+		r = fn((void *)key, kvs->ksize, (void *)value, kvs->vsize, (void *)dc);
+		if(r)
+			goto out_kvs_iterate;
+
+	}
+
+out_kvs_iterate:
+	kfree(entry);
+	kfree(key);
+	kfree(value);
+
+	return r;
+}
+
 static struct kvstore *kvs_create_sparse_cowbtree(struct metadata *md,
 			uint32_t ksize, uint32_t vsize, uint32_t knummax,
 			bool unformatted)
@@ -795,7 +848,7 @@ static struct kvstore *kvs_create_sparse_cowbtree(struct metadata *md,
 		kvs->ckvs.kvs_insert = kvs_insert_sparse_cowbtree;
 		kvs->ckvs.kvs_lookup = kvs_lookup_sparse_cowbtree;
 		kvs->ckvs.kvs_delete = kvs_delete_sparse_cowbtree;
-		kvs->ckvs.kvs_iterate = NULL;
+		kvs->ckvs.kvs_iterate = kvs_iterate_sparse_cowbtree;
 
 		md->kvs_sparse = kvs;
 		__begin_transaction(md);
@@ -812,7 +865,7 @@ static struct kvstore *kvs_create_sparse_cowbtree(struct metadata *md,
 		kvs->ckvs.kvs_insert = kvs_insert_sparse_cowbtree;
 		kvs->ckvs.kvs_lookup = kvs_lookup_sparse_cowbtree;
 		kvs->ckvs.kvs_delete = kvs_delete_sparse_cowbtree;
-		kvs->ckvs.kvs_iterate = NULL;
+		kvs->ckvs.kvs_iterate = kvs_iterate_sparse_cowbtree;
 
 		md->kvs_sparse = kvs;
 	}
