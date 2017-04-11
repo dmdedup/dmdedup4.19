@@ -30,7 +30,11 @@
 #define METADATA_CACHESIZE 64  /* currently block manager ignores this value */
 #define METADATA_MAXLOCKS 5
 #define METADATA_SUPERBLOCK_LOCATION 0
-#define PRIVATE_DATA_SIZE 16
+#define PRIVATE_DATA_SIZE 16 /* physical and logical block counter */
+#define DM_DEDUP_MAGIC 0x44447570 /* Hex value for "DDUP" */
+#define DM_DEDUP_VERSION 1
+#define SUPERBLOCK_CSUM_XOR 189575
+
 
 struct metadata {
 	struct dm_block_manager *meta_bm;
@@ -70,11 +74,11 @@ struct walk_info {
 
 struct metadata_superblock {
 	__le32 csum; /* Checksum of superblock except for this field. */
+        __le64 magic; /* Magic number to check against */
+        __le32 version; /* Metadata root version */
 	__le32 flags; /* General purpose flags. Not used. */
 	__le64 blocknr;	/* This block number, dm_block_t. */
 	__u8 uuid[16]; /* UUID of device (Not used) */
-	__le64 magic; /* Magic number to check against */
-	__le32 version;	/* Metadata root version */
 	__u8 metadata_space_map_root[SPACE_MAP_ROOT_SIZE];/* Metadata space
 							     map */
 	__u8 data_space_map_root[SPACE_MAP_ROOT_SIZE]; /* Data space map */
@@ -162,6 +166,10 @@ static int __commit_transaction(struct metadata *md)
 
 	memcpy(disk_super->private_data, md->private_data, PRIVATE_DATA_SIZE);
 
+	disk_super->csum = cpu_to_le32(dm_bm_checksum(&disk_super->flags,
+						      sizeof(struct metadata_superblock) - sizeof(__le32),
+						      SUPERBLOCK_CSUM_XOR));
+
 	r = dm_tm_commit(md->tm, sblock);
 
 out:
@@ -212,6 +220,14 @@ static int write_initial_superblock(struct metadata *md)
 	if (r < 0)
 		goto bad_locked;
 
+	disk_super->magic = cpu_to_le32(DM_DEDUP_MAGIC);
+	disk_super->version = DM_DEDUP_VERSION;
+
+	disk_super->data_block_size = cpu_to_le32(METADATA_BSIZE);
+	disk_super->metadata_block_size = cpu_to_le32(METADATA_BSIZE);
+
+	disk_super->blocknr = cpu_to_le64(dm_block_location(sblock));
+
 	return dm_tm_commit(md->tm, sblock);
 
 bad_locked:
@@ -247,6 +263,47 @@ static int superblock_all_zeroes(struct dm_block_manager *bm, bool *result)
 	return 0;
 }
 
+static int verify_superblock(struct dm_block_manager *bm)
+{
+	int r;
+	struct metadata_superblock *disk_super;
+	struct dm_block *sblock;
+	__le32 csum_le;
+
+	r = dm_bm_read_lock(bm, METADATA_SUPERBLOCK_LOCATION,
+			    NULL, &sblock);
+	if (r)
+		return r;
+
+	disk_super = dm_block_data(sblock);
+
+	if (DM_DEDUP_MAGIC != le64_to_cpu(disk_super->magic))
+		goto bad_sb;
+
+	if (DM_DEDUP_VERSION != disk_super->version)
+		goto bad_sb;
+
+	if (METADATA_BSIZE != le32_to_cpu(disk_super->data_block_size))
+		goto bad_sb;
+
+	if (METADATA_BSIZE != le32_to_cpu(disk_super->metadata_block_size))
+		goto bad_sb;
+
+        csum_le = cpu_to_le32(dm_bm_checksum(&disk_super->flags,
+                                             sizeof(struct metadata_superblock) - sizeof(__le32),
+                                             SUPERBLOCK_CSUM_XOR));
+
+        if (csum_le != disk_super->csum)
+                goto bad_sb;
+
+        dm_bm_unlock(sblock);
+	return 0;
+
+bad_sb:
+        dm_bm_unlock(sblock);
+        return -1;
+
+}
 static struct metadata *init_meta_cowbtree(void *input_param, bool *unformatted)
 {
 	int ret;
@@ -280,6 +337,14 @@ static struct metadata *init_meta_cowbtree(void *input_param, bool *unformatted)
 	if (!*unformatted) {
 		struct dm_block *sblock;
 		struct metadata_superblock *disk_super;
+
+		DMINFO("Reconstruct DDUP device");
+
+		ret = verify_superblock(meta_bm);
+		if (ret < 0) {
+			DMERR("superblock verification failed");
+			/* XXX: handlr error */
+                }
 
 		md->meta_bm = meta_bm;
 
