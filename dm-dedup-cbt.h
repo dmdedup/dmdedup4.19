@@ -38,7 +38,7 @@ extern struct metadata_ops metadata_ops_cowbtree;
 
 struct init_param_cowbtree {
 	struct block_device *metadata_bdev;
-	uint64_t blocks;
+	u64 blocks;
 };
 
 #endif /* COWBTREE_BACKEND_H */
