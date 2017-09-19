@@ -37,7 +37,7 @@
 extern struct metadata_ops metadata_ops_inram;
 
 struct init_param_inram {
-	uint64_t blocks;
+	u64 blocks;
 };
 
 #endif /* INRAM_BACKEND_H */
