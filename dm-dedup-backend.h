@@ -39,8 +39,8 @@ struct metadata_ops {
 	 * Valid pointer on success.
 	 */
 	struct kvstore * (*kvs_create_linear)(struct metadata *md,
-			uint32_t ksize, uint32_t vsize, uint32_t kmax,
-			bool unformatted);
+					      u32 ksize, uint32_t vsize,
+					      u32 kmax, bool unformatted);
 	/*
 	 * Creates sparse key-value store. Ksize and vsize in bytes.
 	 * If ksize or vsize are equal to zero, it means that keys
@@ -52,8 +52,8 @@ struct metadata_ops {
 	 * Valid pointer on success.
 	 */
 	struct kvstore * (*kvs_create_sparse)(struct metadata *md,
-			uint32_t ksize, uint32_t vsize, uint32_t knummax,
-			bool unformatted);
+					      u32 ksize, uint32_t vsize,
+					      u32 knummax, bool unformatted);
 
 	/*
 	 * Returns -ERR* on error.
@@ -93,7 +93,7 @@ struct metadata_ops {
 	 * Returns 0 on success.
 	 */
 	int (*get_private_data)(struct metadata *md, void **data,
-			uint32_t size);
+				uint32_t size);
 
 	/*
 	 * Fills in private data stored in the metadata.
