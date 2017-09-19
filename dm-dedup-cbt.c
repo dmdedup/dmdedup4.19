@@ -76,9 +76,8 @@ struct metadata_superblock {
 	__le32 flags; /* General purpose flags. Not used. */
 	__le64 blocknr;	/* This block number, dm_block_t. */
 	__u8 uuid[16]; /* UUID of device (Not used) */
-	__u8 metadata_space_map_root[SPACE_MAP_ROOT_SIZE];/* Metadata space
-							   * map
-							   */
+	/* Metadata space map */
+	__u8 metadata_space_map_root[SPACE_MAP_ROOT_SIZE];
 	__u8 data_space_map_root[SPACE_MAP_ROOT_SIZE]; /* Data space map */
 	__le64 lbn_pbn_root; /* lbn pbn btree root. */
 	__le64 hash_pbn_root; /* hash pbn btree root. */
@@ -778,7 +777,7 @@ static int kvs_iterate_sparse_cowbtree(struct kvstore *kvs,
 	key = kmalloc(kvs->ksize, GFP_NOIO);
 	value = kmalloc(kvs->vsize, GFP_NOIO);
 
-	//get the lowest and highest keys in the key value store
+	/* Get the lowest and highest keys in the key value store */
 	r = dm_btree_find_lowest_key(&kvcbt->info, kvcbt->root, &lowest);
 	if (r <= 0)
 		goto out_kvs_iterate;
@@ -788,7 +787,7 @@ static int kvs_iterate_sparse_cowbtree(struct kvstore *kvs,
 		goto out_kvs_iterate;
 
 	while (lowest <= highest) {
-		//get the next entry entry in the kvs store
+		/* Get the next entry entry in the kvs store */
 		r = dm_btree_lookup_next(&kvcbt->info, kvcbt->root,
 					 &lowest, &lowest, (void *)entry);
 
@@ -796,11 +795,11 @@ static int kvs_iterate_sparse_cowbtree(struct kvstore *kvs,
 		if (r)
 			continue;
 
-		//split the key and value separately
+		/* Split the key and value separately */
 		memcpy(key, entry, kvs->ksize);
 		memcpy(value, (void *)(entry + kvs->ksize), kvs->vsize);
 
-		//call the cleanup callback function
+		/* Call the cleanup callback function */
 		r = fn((void *)key, kvs->ksize, (void *)value,
 		       kvs->vsize, (void *)dc);
 		if (r)
