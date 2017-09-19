@@ -30,7 +30,7 @@ static struct shash_desc *
 slot_to_desc(struct hash_desc_table *desc_table, unsigned long slot)
 {
 	BUG_ON(slot >= DEDUP_HASH_DESC_COUNT);
-	return &desc_table->desc[slot*desc_table->desc_state_size];
+	return &desc_table->desc[slot * desc_table->desc_state_size];
 }
 
 struct hash_desc_table *desc_table_init(char *hash_alg)
@@ -43,22 +43,23 @@ struct hash_desc_table *desc_table_init(char *hash_alg)
 	desc_table = kzalloc(sizeof(struct hash_desc_table), GFP_NOIO);
 	if (!desc_table)
 		return ERR_PTR(-ENOMEM);
-    /* 
+    /*
      * This snippet is only to get size of state for
      * if sha1 sha1_state, if sha256 sha256_state like generically
      */
 	tfm = crypto_alloc_hash(hash_alg, 0, CRYPTO_ALG_ASYNC);
-	desc_table->desc_state_size = sizeof(struct shash_desc) + 
+	desc_table->desc_state_size = sizeof(struct shash_desc) +
 					crypto_shash_descsize(tfm);
 	crypto_free_hash(tfm);
 	tfm = NULL;
-	desc_table->desc = 
-		kzalloc(desc_table->desc_state_size * DEDUP_HASH_DESC_COUNT, GFP_NOIO);
+	desc_table->desc =
+		kzalloc(desc_table->desc_state_size * DEDUP_HASH_DESC_COUNT,
+			GFP_NOIO);
 	if (!desc_table->desc)
 		return ERR_PTR(-ENOMEM);
 	for (i = 0; i < DEDUP_HASH_DESC_COUNT; i++) {
 		desc_table->free_bitmap[i] = true;
-		desc = &desc_table->desc[i*desc_table->desc_state_size];
+		desc = &desc_table->desc[i * desc_table->desc_state_size];
 		desc->flags = 0;
 		desc->tfm = crypto_alloc_hash(hash_alg, 0, CRYPTO_ALG_ASYNC);
 		if (IS_ERR(desc->tfm))
@@ -74,8 +75,9 @@ void desc_table_deinit(struct hash_desc_table *desc_table)
 {
 	int i = 0;
 	struct shash_desc *desc;
+
 	for (i = 0; i < DEDUP_HASH_DESC_COUNT; i++) {
-		desc = &desc_table->desc[i*desc_table->desc_state_size];
+		desc = &desc_table->desc[i * desc_table->desc_state_size];
 		crypto_free_hash(desc->tfm);
 	}
 	kfree(desc_table->desc);
@@ -126,12 +128,12 @@ unsigned int get_hash_digestsize(struct hash_desc_table *desc_table)
 
 	ret = crypto_hash_digestsize(desc->tfm);
 	put_slot(desc_table, slot);
-	
+
 	return ret;
 }
 
 int compute_hash_bio(struct hash_desc_table *desc_table,
-				struct bio *bio, char *hash)
+		     struct bio *bio, char *hash)
 {
 	struct scatterlist sg;
 	int ret = 0;
@@ -139,6 +141,7 @@ int compute_hash_bio(struct hash_desc_table *desc_table,
 	struct bio_vec bvec;
 	struct bvec_iter iter;
 	struct shash_desc *desc;
+
 	slot = get_next_slot(desc_table);
 	desc = slot_to_desc(desc_table, slot);
 
@@ -159,7 +162,9 @@ int compute_hash_bio(struct hash_desc_table *desc_table,
 			crypto_hash_update(desc, &sg, sg.length);
 #else
 		u8 _b[4096] = {0};
-		memcpy(_b,(page_address(bvec.bv_page)+bvec.bv_offset),bvec.bv_len);
+
+		memcpy(_b, (page_address(bvec.bv_page) + bvec.bv_offset),
+		       bvec.bv_len);
 		crypto_hash_update(desc, _b, bvec.bv_len);
 #endif
 	}
