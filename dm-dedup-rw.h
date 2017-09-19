@@ -14,6 +14,6 @@
 #define DM_DEDUP_RW_H
 
 extern struct bio *prepare_bio_on_write(struct dedup_config *dc,
-							struct bio *bio);
+					struct bio *bio);
 
 #endif /* DM_DEDUP_RW_H */
