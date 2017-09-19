@@ -25,9 +25,9 @@
 
 struct metadata {
 	/* Space Map */
-	uint32_t *smap;
-	uint64_t smax;
-	uint64_t allocptr;
+	u32 *smap;
+	u64 smax;
+	u64 allocptr;
 
 	/*
 	 * XXX: Currently we support only one linear and one sparse KVS.
@@ -38,13 +38,13 @@ struct metadata {
 
 struct kvstore_inram {
 	struct kvstore ckvs;
-	uint32_t kmax;
+	u32 kmax;
 	char *store;
 };
 
 static struct metadata *init_meta_inram(void *init_param, bool *unformatted)
 {
-	uint64_t smap_size, tmp;
+	u64 smap_size, tmp;
 	struct metadata *md;
 	struct init_param_inram *p = (struct init_param_inram *)init_param;
 
@@ -65,7 +65,7 @@ static struct metadata *init_meta_inram(void *init_param, bool *unformatted)
 	}
 
 	tmp = smap_size;
-	(void) do_div(tmp, (1024 * 1024));
+	(void)do_div(tmp, (1024 * 1024));
 	DMINFO("Space allocated for pbn reference count map: %llu.%06llu MB\n",
 	       tmp, smap_size - (tmp * (1024 * 1024)));
 
@@ -99,7 +99,6 @@ static void exit_meta_inram(struct metadata *md)
 	kfree(md);
 }
 
-
 static int flush_meta_inram(struct metadata *md)
 {
 	return 0;
@@ -109,7 +108,7 @@ static int flush_meta_inram(struct metadata *md)
  *		Space Management Functions		*
  ********************************************************/
 
-static uint64_t next_head(uint64_t current_head, uint64_t smax)
+static uint64_t next_head(u64 current_head, u64 smax)
 {
 	current_head += 1;
 	return dm_sector_div64(current_head, smax);
@@ -117,9 +116,10 @@ static uint64_t next_head(uint64_t current_head, uint64_t smax)
 
 static int alloc_data_block_inram(struct metadata *md, uint64_t *blockn)
 {
-	uint64_t head, tail;
+	u64 head, tail;
 
-	head = tail = md->allocptr;
+	head = md->allocptr;
+	tail = md->allocptr;
 
 	do {
 		if (!md->smap[head]) {
@@ -199,9 +199,9 @@ static int is_deleted(char *ptr, int length)
  *********************************************************/
 
 static int kvs_delete_linear_inram(struct kvstore *kvs,
-					void *key, int32_t ksize)
+				   void *key, int32_t ksize)
 {
-	uint64_t idx;
+	u64 idx;
 	char *ptr;
 	struct kvstore_inram *kvinram = NULL;
 
@@ -231,9 +231,10 @@ static int kvs_delete_linear_inram(struct kvstore *kvs,
  * < 0 - error on lookup
  */
 static int kvs_lookup_linear_inram(struct kvstore *kvs, void *key,
-			int32_t ksize, void *value, int32_t *vsize)
+				   s32 ksize, void *value,
+				   int32_t *vsize)
 {
-	uint64_t idx;
+	u64 idx;
 	char *ptr;
 	struct kvstore_inram *kvinram = NULL;
 
@@ -259,10 +260,10 @@ static int kvs_lookup_linear_inram(struct kvstore *kvs, void *key,
 }
 
 static int kvs_insert_linear_inram(struct kvstore *kvs, void *key,
-				int32_t ksize, void *value,
-				int32_t vsize)
+				   s32 ksize, void *value,
+				   int32_t vsize)
 {
-	uint64_t idx;
+	u64 idx;
 	char *ptr;
 	struct kvstore_inram *kvinram = NULL;
 
@@ -292,11 +293,13 @@ static int kvs_insert_linear_inram(struct kvstore *kvs, void *key,
  *	deletion in-place is safe while iterating.
  */
 static int kvs_iterate_linear_inram(struct kvstore *kvs,
-		int (*iteration_action)(void *key, int32_t ksize,
-		void *value, int32_t vsize, void *data), void *data)
+				    int (*iteration_action)
+				    (void *key, int32_t ksize,
+				     void *value, int32_t vsize,
+				     void *data), void *data)
 {
 	int ret = 0;
-	uint64_t i = 0;
+	u64 i = 0;
 	char *ptr = NULL;
 	struct kvstore_inram *kvinram = NULL;
 
@@ -309,7 +312,7 @@ static int kvs_iterate_linear_inram(struct kvstore *kvs,
 
 		if (!ret) {
 			ret = iteration_action((void *)&i, kvs->ksize,
-					(void *)ptr, kvs->vsize, data);
+					       (void *)ptr, kvs->vsize, data);
 			if (ret < 0)
 				goto out;
 		}
@@ -320,11 +323,11 @@ out:
 }
 
 static struct kvstore *kvs_create_linear_inram(struct metadata *md,
-			uint32_t ksize, uint32_t vsize, uint32_t kmax,
-			bool unformatted)
+					       u32 ksize, u32 vsize,
+					       u32 kmax, bool unformatted)
 {
 	struct kvstore_inram *kvs;
-	uint64_t kvstore_size, tmp;
+	u64 kvstore_size, tmp;
 
 	if (!vsize || !ksize || !kmax)
 		return ERR_PTR(-ENOTSUPP);
@@ -349,7 +352,7 @@ static struct kvstore *kvs_create_linear_inram(struct metadata *md,
 	}
 
 	tmp = kvstore_size;
-	(void) do_div(tmp, (1024 * 1024));
+	(void)do_div(tmp, (1024 * 1024));
 	DMINFO("Space allocated for linear key value store: %llu.%06llu MB\n",
 	       tmp, kvstore_size - (tmp * (1024 * 1024)));
 
@@ -375,8 +378,8 @@ static struct kvstore *kvs_create_linear_inram(struct metadata *md,
 static int kvs_delete_sparse_inram(struct kvstore *kvs,
 				   void *key, int32_t ksize)
 {
-	uint64_t idxhead = *((uint64_t *)key);
-	uint32_t entry_size, head, tail;
+	u64 idxhead = *((uint64_t *)key);
+	u32 entry_size, head, tail;
 	char *ptr;
 	struct kvstore_inram *kvinram = NULL;
 
@@ -395,9 +398,9 @@ static int kvs_delete_sparse_inram(struct kvstore *kvs,
 		if (is_empty(ptr, entry_size))
 			goto doesnotexist;
 
-		if (memcmp(ptr, key, kvs->ksize))
+		if (memcmp(ptr, key, kvs->ksize)) {
 			head = next_head(head, kvinram->kmax);
-		else {
+		} else {
 			memset(ptr, DELETED_ENTRY, entry_size);
 			return 0;
 		}
@@ -413,10 +416,10 @@ doesnotexist:
  * < 0 - error on lookup
  */
 static int kvs_lookup_sparse_inram(struct kvstore *kvs, void *key,
-				   int32_t ksize, void *value, int32_t *vsize)
+				   s32 ksize, void *value, int32_t *vsize)
 {
-	uint64_t idxhead = *((uint64_t *)key);
-	uint32_t entry_size, head, tail;
+	u64 idxhead = *((uint64_t *)key);
+	u32 entry_size, head, tail;
 	char *ptr;
 	struct kvstore_inram *kvinram = NULL;
 
@@ -435,9 +438,9 @@ static int kvs_lookup_sparse_inram(struct kvstore *kvs, void *key,
 		if (is_empty(ptr, entry_size))
 			return 0;
 
-		if (memcmp(ptr, key, kvs->ksize))
+		if (memcmp(ptr, key, kvs->ksize)) {
 			head = next_head(head, kvinram->kmax);
-		else {
+		} else {
 			memcpy(value, ptr + kvs->ksize, kvs->vsize);
 			return 1;
 		}
@@ -448,10 +451,10 @@ static int kvs_lookup_sparse_inram(struct kvstore *kvs, void *key,
 }
 
 static int kvs_insert_sparse_inram(struct kvstore *kvs, void *key,
-				   int32_t ksize, void *value, int32_t vsize)
+				   s32 ksize, void *value, s32 vsize)
 {
-	uint64_t idxhead = *((uint64_t *)key);
-	uint32_t entry_size, head, tail;
+	u64 idxhead = *((uint64_t *)key);
+	u32 entry_size, head, tail;
 	char *ptr;
 	struct kvstore_inram *kvinram = NULL;
 
@@ -489,11 +492,13 @@ static int kvs_insert_sparse_inram(struct kvstore *kvs, void *key,
  *	 deletion in-place is safe while iterating.
  */
 static int kvs_iterate_sparse_inram(struct kvstore *kvs,
-		int (*iteration_action)(void *key, int32_t ksize,
-		void *value, int32_t vsize, void *data), void *data)
+				    int (*iteration_action)
+				    (void *key, int32_t ksize,
+				     void *value, int32_t vsize,
+				     void *data), void *data)
 {
 	int err = 0;
-	uint32_t kvalue_size, head = 0;
+	u32 kvalue_size, head = 0;
 	char *ptr = NULL;
 	struct kvstore_inram *kvinram = NULL;
 
@@ -507,10 +512,10 @@ static int kvs_iterate_sparse_inram(struct kvstore *kvs,
 		ptr = kvinram->store + (head * kvalue_size);
 
 		if (!is_empty(ptr, kvalue_size) &&
-			!is_deleted(ptr, kvalue_size)) {
+		    !is_deleted(ptr, kvalue_size)) {
 			err = iteration_action((void *)ptr, kvs->ksize,
-					(void *)(ptr + kvs->ksize),
-					kvs->vsize, data);
+					       (void *)(ptr + kvs->ksize),
+					       kvs->vsize, data);
 
 			if (err < 0)
 				goto out;
@@ -524,11 +529,11 @@ out:
 }
 
 static struct kvstore *kvs_create_sparse_inram(struct metadata *md,
-			uint32_t ksize, uint32_t vsize, uint32_t knummax,
-			bool unformatted)
+					       u32 ksize, u32 vsize,
+					       u32 knummax, bool unformatted)
 {
 	struct kvstore_inram *kvs;
-	uint64_t kvstore_size, tmp;
+	u64 kvstore_size, tmp;
 
 	if (!vsize || !ksize || !knummax)
 		return ERR_PTR(-ENOTSUPP);
@@ -552,7 +557,7 @@ static struct kvstore *kvs_create_sparse_inram(struct metadata *md,
 	}
 
 	tmp = kvstore_size;
-	(void) do_div(tmp, (1024 * 1024));
+	(void)do_div(tmp, (1024 * 1024));
 	DMINFO("Space allocated for sparse key value store: %llu.%06llu MB\n",
 	       tmp, kvstore_size - (tmp * (1024 * 1024)));
 
