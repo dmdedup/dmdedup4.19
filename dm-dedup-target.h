@@ -52,29 +52,29 @@ struct dedup_config {
 	struct dm_dev *data_dev;
 	struct dm_dev *metadata_dev;
 
-	uint32_t block_size;	/* in bytes */
-	uint32_t sectors_per_block;
+	u32 block_size;	/* in bytes */
+	u32 sectors_per_block;
 
-	uint32_t pblocks;	/* physical blocks */
-	uint32_t lblocks;	/* logical blocks */
+	u32 pblocks;	/* physical blocks */
+	u32 lblocks;	/* logical blocks */
 
 	struct workqueue_struct *workqueue;
 
 	struct hash_desc_table *desc_table;
 
-	uint64_t logical_block_counter;	/* Total number of used LBNs */
-	uint64_t physical_block_counter;/* Total number of allocated PBNs */
-	uint64_t gc_counter; /*Total number of garbage collected blocks */
+	u64 logical_block_counter;	/* Total number of used LBNs */
+	u64 physical_block_counter;/* Total number of allocated PBNs */
+	u64 gc_counter; /*Total number of garbage collected blocks */
 
-	uint64_t	writes;		/* total number of writes */
-	uint64_t	dupwrites;
-	uint64_t	uniqwrites;
-	uint64_t	reads_on_writes;
-	uint64_t	overwrites;	/* writes to a prev. written offset */
-	uint64_t	newwrites;	/* writes to never written offsets */
+	u64	writes;		/* total number of writes */
+	u64	dupwrites;
+	u64	uniqwrites;
+	u64	reads_on_writes;
+	u64	overwrites;	/* writes to a prev. written offset */
+	u64	newwrites;	/* writes to never written offsets */
 
-	struct dm_io_client *io_client;		/* used for read-on-write
-						   of misaligned requests */
+	/* used for read-on-write of misaligned requests */
+	struct dm_io_client *io_client;
 
 	char backend_str[MAX_BACKEND_NAME_LEN];
 	struct metadata_ops *mdops;
@@ -85,20 +85,20 @@ struct dedup_config {
 	char crypto_alg[CRYPTO_ALG_NAME_LEN];
 	int crypto_key_size;
 
-	uint32_t flushrq;		/* after how many writes call flush */
-	uint64_t writes_after_flush;	/* # of writes after the last flush */
+	u32 flushrq;		/* after how many writes call flush */
+	u64 writes_after_flush;	/* # of writes after the last flush */
 
 	mempool_t *dedup_work_pool;	/* Dedup work pool */
 };
 
 /* Value of the HASH-PBN key-value store */
 struct hash_pbn_value {
-	uint64_t pbn;	/* in blocks */
+	u64 pbn;	/* in blocks */
 };
 
 /* Value of the LBN-PBN key-value store */
 struct lbn_pbn_value {
-	uint64_t pbn;	/* in blocks */
+	u64 pbn;	/* in blocks */
 };
 
 #endif /* DM_DEDUP_H */
