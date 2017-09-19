@@ -35,17 +35,17 @@
 #include "dm-dedup-target.h"
 
 struct kvstore {
-	uint32_t vsize;
-	uint32_t ksize;
+	u32 vsize;
+	u32 ksize;
 
 	int (*kvs_delete)(struct kvstore *kvs, void *key, int32_t ksize);
 	int (*kvs_lookup)(struct kvstore *kvs, void *key, int32_t ksize,
-				void *value, int32_t *vsize);
+			  void *value, int32_t *vsize);
 	int (*kvs_insert)(struct kvstore *kvs, void *key, int32_t ksize,
-				void *value, int32_t vsize);
+			  void *value, int32_t vsize);
 	int (*kvs_iterate)(struct kvstore *kvs, int (*itr_action)
 				(void *key, int32_t ksize, void *value,
-				 int32_t vsize, void *data), void *data);
+				 s32 vsize, void *data), void *data);
 };
 
 #endif /* KVSTORE_H */
