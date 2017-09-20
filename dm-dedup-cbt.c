@@ -67,13 +67,17 @@ struct walk_info {
 	s32 vsize;
 };
 
+enum superblock_flags {
+	CLEAN_SHUTDOWN /* on disk flag to mark clean shutdown */
+};
+
 #define SPACE_MAP_ROOT_SIZE 128
 
 struct metadata_superblock {
 	__le32 csum; /* Checksum of superblock except for this field. */
 	__le64 magic; /* Magic number to check against */
 	__le32 version; /* Metadata root version */
-	__le32 flags; /* General purpose flags. Not used. */
+	__le32 flags; /* General purpose flags */
 	__le64 blocknr;	/* This block number, dm_block_t. */
 	__u8 uuid[16]; /* UUID of device (Not used) */
 	/* Metadata space map */
@@ -113,7 +117,7 @@ static int __begin_transaction(struct metadata *md)
 	return r;
 }
 
-static int __commit_transaction(struct metadata *md)
+static int __commit_transaction(struct metadata *md, bool destroy_flag)
 {
 	int r = 0;
 	size_t metadata_len, data_len;
@@ -145,6 +149,12 @@ static int __commit_transaction(struct metadata *md)
 
 	disk_super = dm_block_data(sblock);
 
+	/* if destroy flag is set, set the bit 1 otherwise 0 */
+	if (destroy_flag)
+		disk_super->flags |= (1 << CLEAN_SHUTDOWN);
+	else
+		disk_super->flags &= ~(1 << CLEAN_SHUTDOWN);
+
 	if (md->kvs_linear)
 		disk_super->lbn_pbn_root = cpu_to_le64(md->kvs_linear->root);
 
@@ -153,6 +163,7 @@ static int __commit_transaction(struct metadata *md)
 
 	r = dm_sm_copy_root(md->meta_sm,
 			    &disk_super->metadata_space_map_root, metadata_len);
+
 	if (r < 0)
 		goto out_locked;
 
@@ -170,11 +181,12 @@ static int __commit_transaction(struct metadata *md)
 
 	r = dm_tm_commit(md->tm, sblock);
 
-out:
-	return r;
+	goto out;
 
 out_locked:
 	dm_bm_unlock(sblock);
+
+out:
 	return r;
 }
 
@@ -226,6 +238,9 @@ static int write_initial_superblock(struct metadata *md)
 
 	disk_super->blocknr = cpu_to_le64(dm_block_location(sblock));
 
+	/* set the clean shutdown flag to 0 */
+	disk_super->flags &= ~(1 << CLEAN_SHUTDOWN);
+	
 	return dm_tm_commit(md->tm, sblock);
 
 bad_locked:
@@ -307,6 +322,10 @@ static int verify_superblock(struct dm_block_manager *bm)
 		DMERR("Metadata block size mismatch");
 		goto bad_sb;
 	}
+	
+	/* if clean shutdown flag is not set return error */
+	if (!(disk_super->flags & (1 << CLEAN_SHUTDOWN)))
+		DMWARN("Possible data Inconsistency. Run dmdedup_corruption_check tool");
 
 	goto unblock_superblock;
 
@@ -450,7 +469,8 @@ static void exit_meta_cowbtree(struct metadata *md)
 {
 	int ret;
 
-	ret = __commit_transaction(md);
+	bool destroy_flag = true;
+	ret = __commit_transaction(md, destroy_flag);
 	if (ret < 0)
 		DMWARN("%s: __commit_transaction() failed, error = %d.",
 		       __func__, ret);
@@ -470,7 +490,8 @@ static int flush_meta_cowbtree(struct metadata *md)
 {
 	int r;
 
-	r = __commit_transaction(md);
+	bool destroy_flag = false;
+	r = __commit_transaction(md, destroy_flag);
 	if (r < 0)
 		return r;
 
