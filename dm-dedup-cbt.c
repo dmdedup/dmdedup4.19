@@ -271,9 +271,17 @@ static int verify_superblock(struct dm_block_manager *bm)
 	r = dm_bm_read_lock(bm, METADATA_SUPERBLOCK_LOCATION,
 			    NULL, &sblock);
 	if (r)
-		return r;
+		goto out;
 
 	disk_super = dm_block_data(sblock);
+	
+	csum_le = cpu_to_le32(dm_bm_checksum(&disk_super->flags,
+					     sizeof(struct metadata_superblock)
+					     - sizeof(__le32),
+					     SUPERBLOCK_CSUM_XOR));
+
+	if (csum_le != disk_super->csum)
+		goto bad_sb;
 
 	if (le64_to_cpu(disk_super->magic) != DM_DEDUP_MAGIC)
 		goto bad_sb;
@@ -287,20 +295,16 @@ static int verify_superblock(struct dm_block_manager *bm)
 	if (le32_to_cpu(disk_super->metadata_block_size) != METADATA_BSIZE)
 		goto bad_sb;
 
-	csum_le = cpu_to_le32(dm_bm_checksum(&disk_super->flags,
-					     sizeof(struct metadata_superblock)
-					     - sizeof(__le32),
-					     SUPERBLOCK_CSUM_XOR));
-
-	if (csum_le != disk_super->csum)
-		goto bad_sb;
-
-	dm_bm_unlock(sblock);
-	return 0;
+	goto unblock_superblock;
 
 bad_sb:
+	r = -1;
+
+unblock_superblock:
 	dm_bm_unlock(sblock);
-	return -1;
+
+out:
+	return r;
 }
 
 static struct metadata *init_meta_cowbtree(void *input_param, bool *unformatted)
