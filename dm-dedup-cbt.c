@@ -274,26 +274,39 @@ static int verify_superblock(struct dm_block_manager *bm)
 		goto out;
 
 	disk_super = dm_block_data(sblock);
-	
+
 	csum_le = cpu_to_le32(dm_bm_checksum(&disk_super->flags,
 					     sizeof(struct metadata_superblock)
 					     - sizeof(__le32),
 					     SUPERBLOCK_CSUM_XOR));
 
-	if (csum_le != disk_super->csum)
+	if (csum_le != disk_super->csum) {
+		DMERR("Superblock checksum verification failed");
 		goto bad_sb;
+	}
 
-	if (le64_to_cpu(disk_super->magic) != DM_DEDUP_MAGIC)
+	if (le64_to_cpu(disk_super->magic) != DM_DEDUP_MAGIC) {
+		DMERR("Magic number mismatch");
 		goto bad_sb;
+	}
 
-	if (disk_super->version != DM_DEDUP_VERSION)
+	if (disk_super->version != DM_DEDUP_VERSION) {
+		DMERR("Version number mismatch");
+		/*
+		 * XXX: handle version upgrade in future if possible
+		 */
 		goto bad_sb;
+	}
 
-	if (le32_to_cpu(disk_super->data_block_size) != METADATA_BSIZE)
+	if (le32_to_cpu(disk_super->data_block_size) != METADATA_BSIZE) {
+		DMERR("Data block size mismatch");
 		goto bad_sb;
+	}
 
-	if (le32_to_cpu(disk_super->metadata_block_size) != METADATA_BSIZE)
+	if (le32_to_cpu(disk_super->metadata_block_size) != METADATA_BSIZE) {
+		DMERR("Metadata block size mismatch");
 		goto bad_sb;
+	}
 
 	goto unblock_superblock;
 
