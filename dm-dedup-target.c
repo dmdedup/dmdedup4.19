@@ -30,8 +30,8 @@
 #define MAX_DATA_DEV_BLOCK_SIZE (1024 * 1024)
 
 struct on_disk_stats {
-	uint64_t physical_block_counter;
-	uint64_t logical_block_counter;
+	u64 physical_block_counter;
+	u64 logical_block_counter;
 };
 
 /*
@@ -83,8 +83,8 @@ static void do_io(struct dedup_config *dc, struct bio *bio, uint64_t pbn)
 
 static int handle_read(struct dedup_config *dc, struct bio *bio)
 {
-	uint64_t lbn;
-	uint32_t vsize;
+	u64 lbn;
+	u32 vsize;
 	struct lbn_pbn_value lbnpbn_value;
 	int r;
 
@@ -143,8 +143,8 @@ static int handle_write_no_hash(struct dedup_config *dc,
 				struct bio *bio, uint64_t lbn, u8 *hash)
 {
 	int r;
-	uint32_t vsize;
-	uint64_t pbn_new, pbn_old;
+	u32 vsize;
+	u64 pbn_new, pbn_old;
 	struct lbn_pbn_value lbnpbn_value;
 	struct hash_pbn_value hashpbn_value;
 
@@ -186,8 +186,9 @@ out_1:
 		if (r < 0)
 			dc->uniqwrites--;
 		return r;
-	} else if (r < 0)
+	} else if (r < 0) {
 		goto out_2;
+	}
 
 	/* LBN->PBN mappings exist */
 	dc->overwrites++;
@@ -236,12 +237,12 @@ out_2:
 }
 
 static int handle_write_with_hash(struct dedup_config *dc, struct bio *bio,
-				  uint64_t lbn, u8 *final_hash,
+				  u64 lbn, u8 *final_hash,
 				  struct hash_pbn_value hashpbn_value)
 {
 	int r;
-	uint32_t vsize;
-	uint64_t pbn_new, pbn_old;
+	u32 vsize;
+	u64 pbn_new, pbn_old;
 	struct lbn_pbn_value lbnpbn_value;
 	struct lbn_pbn_value new_lbnpbn_value;
 
@@ -278,12 +279,13 @@ out_1:
 		if (r >= 0) {
 			bio->bi_error = 0;
 			bio_endio(bio);
-		}
-		else
+		} else {
 			dc->dupwrites--;
+		}
 		return r;
-	} else if (r < 0)
+	} else if (r < 0) {
 		goto out_2;
+	}
 
 	/* LBN->PBN mapping entry exists */
 	dc->overwrites++;
@@ -321,18 +323,18 @@ out_2:
 	if (r >= 0) {
 		bio->bi_error = 0;
 		bio_endio(bio);
-	}
-	else
+	} else {
 		dc->dupwrites--;
+	}
 	return r;
 }
 
 static int handle_write(struct dedup_config *dc, struct bio *bio)
 {
-	uint64_t lbn;
+	u64 lbn;
 	u8 hash[MAX_DIGEST_SIZE];
 	struct hash_pbn_value hashpbn_value;
-	uint32_t vsize;
+	u32 vsize;
 	struct bio *new_bio = NULL;
 	int r;
 
@@ -360,14 +362,14 @@ static int handle_write(struct dedup_config *dc, struct bio *bio)
 		r = handle_write_no_hash(dc, bio, lbn, hash);
 	else if (r > 0)
 		r = handle_write_with_hash(dc, bio, lbn, hash,
-					hashpbn_value);
+					   hashpbn_value);
 
 	if (r < 0)
 		return r;
 
 	dc->writes_after_flush++;
 	if ((dc->flushrq && dc->writes_after_flush >= dc->flushrq) ||
-			(bio->bi_opf & (REQ_PREFLUSH | REQ_FUA))) {
+	    (bio->bi_opf & (REQ_PREFLUSH | REQ_FUA))) {
 		r = dc->mdops->flush_meta(dc->bmd);
 		if (r < 0)
 			return r;
@@ -446,16 +448,16 @@ struct dedup_args {
 	struct dm_dev *meta_dev;
 
 	struct dm_dev *data_dev;
-	uint64_t data_size;
+	u64 data_size;
 
-	uint32_t block_size;
+	u32 block_size;
 
 	char hash_algo[CRYPTO_ALG_NAME_LEN];
 
 	enum backend backend;
 	char backend_str[MAX_BACKEND_NAME_LEN];
 
-	uint32_t flushrq;
+	u32 flushrq;
 };
 
 static int parse_meta_dev(struct dedup_args *da, struct dm_arg_set *as,
@@ -464,7 +466,7 @@ static int parse_meta_dev(struct dedup_args *da, struct dm_arg_set *as,
 	int r;
 
 	r = dm_get_device(da->ti, dm_shift_arg(as),
-			dm_table_get_mode(da->ti->table), &da->meta_dev);
+			  dm_table_get_mode(da->ti->table), &da->meta_dev);
 	if (r)
 		*err = "Error opening metadata device";
 
@@ -477,7 +479,7 @@ static int parse_data_dev(struct dedup_args *da, struct dm_arg_set *as,
 	int r;
 
 	r = dm_get_device(da->ti, dm_shift_arg(as),
-			dm_table_get_mode(da->ti->table), &da->data_dev);
+			  dm_table_get_mode(da->ti->table), &da->data_dev);
 	if (r)
 		*err = "Error opening data device";
 	else
@@ -489,10 +491,10 @@ static int parse_data_dev(struct dedup_args *da, struct dm_arg_set *as,
 static int parse_block_size(struct dedup_args *da, struct dm_arg_set *as,
 			    char **err)
 {
-	uint32_t block_size;
+	u32 block_size;
 
 	if (kstrtou32(dm_shift_arg(as), 10, &block_size) ||
-		!block_size ||
+	    !block_size ||
 		block_size < MIN_DATA_DEV_BLOCK_SIZE ||
 		block_size > MAX_DATA_DEV_BLOCK_SIZE ||
 		!is_power_of_2(block_size)) {
@@ -530,11 +532,11 @@ static int parse_backend(struct dedup_args *da, struct dm_arg_set *as,
 
 	strlcpy(backend, dm_shift_arg(as), MAX_BACKEND_NAME_LEN);
 
-	if (!strcmp(backend, "inram"))
+	if (!strcmp(backend, "inram")) {
 		da->backend = BKND_INRAM;
-	else if (!strcmp(backend, "cowbtree"))
+	} else if (!strcmp(backend, "cowbtree")) {
 		da->backend = BKND_COWBTREE;
-	else {
+	} else {
 		*err = "Unsupported metadata backend";
 		return -EINVAL;
 	}
@@ -627,8 +629,8 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	struct on_disk_stats d;
 	struct on_disk_stats *data = &d;
-	uint64_t logical_block_counter = 0;
-	uint64_t physical_block_counter = 0;
+	u64 logical_block_counter = 0;
+	u64 physical_block_counter = 0;
 
 	mempool_t *dedup_work_pool = NULL;
 
@@ -656,7 +658,7 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	}
 
 	dedup_work_pool = mempool_create_kmalloc_pool(MIN_DEDUP_WORK_IO,
-						sizeof(struct dedup_work));
+						      sizeof(struct dedup_work));
 	if (!dedup_work_pool) {
 		ti->error = "failed to create mempool";
 		r = -ENOMEM;
@@ -673,15 +675,15 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	dc->block_size = da.block_size;
 	dc->sectors_per_block = to_sector(da.block_size);
 	data_size = ti->len;
-	(void) sector_div(data_size, dc->sectors_per_block);
+	(void)sector_div(data_size, dc->sectors_per_block);
 	dc->lblocks = data_size;
 
 	data_size = i_size_read(da.data_dev->bdev->bd_inode) >> SECTOR_SHIFT;
-	(void) sector_div(data_size, dc->sectors_per_block);
+	(void)sector_div(data_size, dc->sectors_per_block);
 	dc->pblocks = data_size;
 
 	/* Meta-data backend specific part */
-	switch(da.backend) {
+	switch (da.backend) {
 	case BKND_INRAM:
 		dc->mdops = &metadata_ops_inram;
 		iparam_inram.blocks = dc->pblocks;
@@ -839,13 +841,13 @@ static void dm_dedup_dtr(struct dm_target *ti)
 }
 
 static void dm_dedup_status(struct dm_target *ti, status_type_t status_type,
-			    unsigned status_flags, char *result, unsigned maxlen)
+			    unsigned int status_flags, char *result, unsigned int maxlen)
 {
 	struct dedup_config *dc = ti->private;
-	uint64_t data_total_block_count;
-	uint64_t data_used_block_count;
-	uint64_t data_free_block_count;
-	uint64_t data_actual_block_count;
+	u64 data_total_block_count;
+	u64 data_used_block_count;
+	u64 data_free_block_count;
+	u64 data_actual_block_count;
 	int sz = 0;
 
 	switch (status_type) {
@@ -858,32 +860,32 @@ static void dm_dedup_status(struct dm_target *ti, status_type_t status_type,
 			data_total_block_count - data_used_block_count;
 
 		DMEMIT("%llu %llu %llu %llu ",
-			data_total_block_count, data_free_block_count,
+		       data_total_block_count, data_free_block_count,
 			data_used_block_count, data_actual_block_count);
 
 		DMEMIT("%d %d:%d %d:%d ",
-			dc->block_size,
+		       dc->block_size,
 			MAJOR(dc->data_dev->bdev->bd_dev),
 			MINOR(dc->data_dev->bdev->bd_dev),
 			MAJOR(dc->metadata_dev->bdev->bd_dev),
 			MINOR(dc->metadata_dev->bdev->bd_dev));
 
 		DMEMIT("%llu %llu %llu %llu %llu %llu %llu",
-			dc->writes, dc->uniqwrites, dc->dupwrites,
+		       dc->writes, dc->uniqwrites, dc->dupwrites,
 			dc->reads_on_writes, dc->overwrites, dc->newwrites, dc->gc_counter);
 		break;
 	case STATUSTYPE_TABLE:
 		DMEMIT("%s %s %u %s %s %u",
-			dc->metadata_dev->name, dc->data_dev->name, dc->block_size,
+		       dc->metadata_dev->name, dc->data_dev->name, dc->block_size,
 			dc->crypto_alg, dc->backend_str, dc->flushrq);
 	}
 }
 
 static int cleanup_hash_pbn(void *key, int32_t ksize, void *value,
-			    int32_t vsize, void *data)
+			    s32 vsize, void *data)
 {
 	int r = 0;
-	uint64_t pbn_val = 0;
+	u64 pbn_val = 0;
 	struct hash_pbn_value hashpbn_value = *((struct hash_pbn_value *)value);
 	struct dedup_config *dc = (struct dedup_config *)data;
 
@@ -928,12 +930,12 @@ static int garbage_collect(struct dedup_config *dc)
 }
 
 static int dm_dedup_message(struct dm_target *ti,
-			    unsigned argc, char **argv)
+			    unsigned int argc, char **argv)
 {
 	int r = 0;
 
 	struct dedup_config *dc = ti->private;
-        BUG_ON(!dc);
+	BUG_ON(!dc);
 
 	if (!strcasecmp(argv[0], "garbage_collect")) {
 		r = garbage_collect(dc);
@@ -944,8 +946,9 @@ static int dm_dedup_message(struct dm_target *ti,
 			dc->mdops->flush_bufio_cache(dc->bmd);
 		else
 			r = -ENOTSUPP;
-	} else
+	} else {
 		r = -EINVAL;
+	}
 
 	return r;
 }
