@@ -29,59 +29,64 @@
  * this scenario, we moved the declaration and initialization out
  * of critical path.
  */
-static struct shash_desc *
-slot_to_desc(struct hash_desc_table *desc_table, unsigned long slot)
+static struct shash_desc *slot_to_desc(struct hash_desc_table *desc_table,
+							unsigned long slot)
 {
 	BUG_ON(slot >= DEDUP_HASH_DESC_COUNT);
-	return &desc_table->desc[slot*desc_table->desc_state_size];
+       return desc_table->desc[slot];
 }
 
 struct hash_desc_table *desc_table_init(char *hash_alg)
 {
 	int i = 0;
-	struct shash_desc *desc;
-	struct crypto_shash *tfm = NULL;
-	struct hash_desc_table *desc_table;
+       struct hash_desc_table *desc_table, *out;
+       struct crypto_shash *item;
 
-	desc_table = kzalloc(sizeof(struct hash_desc_table), GFP_NOIO);
+	desc_table = kmalloc(sizeof(struct hash_desc_table), GFP_NOIO);
 	if (!desc_table)
 		return ERR_PTR(-ENOMEM);
-    /* 
-     * This snippet is only to get size of state for
-     * if sha1 sha1_state, if sha256 sha256_state like generically
-     */
-	tfm = crypto_alloc_hash(hash_alg, 0, CRYPTO_ALG_ASYNC);
-	desc_table->desc_state_size = sizeof(struct shash_desc) + 
-					crypto_shash_descsize(tfm);
-	crypto_free_hash(tfm);
-	tfm = NULL;
-	desc_table->desc = 
-		kzalloc(desc_table->desc_state_size * DEDUP_HASH_DESC_COUNT, GFP_NOIO);
-	if (!desc_table->desc)
-		return ERR_PTR(-ENOMEM);
+
 	for (i = 0; i < DEDUP_HASH_DESC_COUNT; i++) {
 		desc_table->free_bitmap[i] = true;
-		desc = &desc_table->desc[i*desc_table->desc_state_size];
-		desc->flags = 0;
-		desc->tfm = crypto_alloc_hash(hash_alg, 0, CRYPTO_ALG_ASYNC);
-		if (IS_ERR(desc->tfm))
-			return (struct hash_desc_table *)desc->tfm;
+               item = crypto_alloc_shash(hash_alg, 0, 0);
+               if (IS_ERR(item)) {
+                       i--;
+                       out = (struct hash_desc_table *)item;
+                       goto error;
+               }
+               desc_table->desc[i] = kmalloc(sizeof(struct shash_desc)
+                                             + crypto_shash_descsize(item),
+                                             GFP_NOIO);
+               if (!desc_table->desc[i]) {
+                       i--;
+                       crypto_free_shash(item);
+                       out = ERR_PTR(-ENOMEM);
+                       goto error;
+               }
+               desc_table->desc[i]->tfm = item;
 	}
 
 	atomic_long_set(&(desc_table->slot_counter), 0);
 
 	return desc_table;
+error:
+       for ( ; i >= 0; i--) {
+               crypto_free_shash(desc_table->desc[i]->tfm);
+               kfree(desc_table->desc[i]);
+       }
+       kfree(desc_table);
+       return out;
 }
 
 void desc_table_deinit(struct hash_desc_table *desc_table)
 {
 	int i = 0;
-	struct shash_desc *desc;
+
 	for (i = 0; i < DEDUP_HASH_DESC_COUNT; i++) {
-		desc = &desc_table->desc[i*desc_table->desc_state_size];
-		crypto_free_hash(desc->tfm);
+               crypto_free_shash(desc_table->desc[i]->tfm);
+               kfree(desc_table->desc[i]);
 	}
-	kfree(desc_table->desc);
+
 	kfree(desc_table);
 	desc_table = NULL;
 }
@@ -121,53 +126,39 @@ static void put_slot(struct hash_desc_table *desc_table, unsigned long slot)
 unsigned int get_hash_digestsize(struct hash_desc_table *desc_table)
 {
 	unsigned long slot;
-	struct shash_desc *desc;
-	unsigned int ret = 0;
+       struct shash_desc *desc;
+       unsigned int ret;
 
 	slot = get_next_slot(desc_table);
 	desc = slot_to_desc(desc_table, slot);
 
-	ret = crypto_hash_digestsize(desc->tfm);
-	put_slot(desc_table, slot);
-	
-	return ret;
+       ret = crypto_shash_digestsize(desc->tfm);
+       put_slot(desc_table, slot);
+       return ret;
 }
 
 int compute_hash_bio(struct hash_desc_table *desc_table,
 				struct bio *bio, char *hash)
 {
-	struct scatterlist sg;
 	int ret = 0;
 	unsigned long slot;
 	struct bio_vec bvec;
 	struct bvec_iter iter;
-	struct shash_desc *desc;
+       struct shash_desc *desc;
+
 	slot = get_next_slot(desc_table);
 	desc = slot_to_desc(desc_table, slot);
 
-	ret = crypto_hash_init(desc);
+       ret = crypto_shash_init(desc);
 	if (ret)
 		goto out;
-
-	sg_init_table(&sg, 1);
 	__bio_for_each_segment(bvec, bio, iter, bio->bi_iter) {
-#if 0
-		/*
-		 * TODO: Don't know why the hash generation is not unique even
-		 * same data being fed to hash_interface. Need to look at it.
-		 * As of now alternete added.
-		 */
-			sg_set_page(&sg, bvec.bv_page, bvec.bv_len,
-				    bvec.bv_offset);
-			crypto_hash_update(desc, &sg, sg.length);
-#else
-		u8 _b[4096] = {0};
-		memcpy(_b,(page_address(bvec.bv_page)+bvec.bv_offset),bvec.bv_len);
-		crypto_hash_update(desc, _b, bvec.bv_len);
-#endif
+               crypto_shash_update(desc,
+                                   page_address(bvec.bv_page)+bvec.bv_offset,
+                                   bvec.bv_len);
 	}
 
-	crypto_hash_final(desc, hash);
+       crypto_shash_final(desc, hash);
 out:
 	put_slot(desc_table, slot);
 	return ret;
