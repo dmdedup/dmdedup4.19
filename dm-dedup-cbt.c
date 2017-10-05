@@ -62,14 +62,6 @@ struct kvstore_cbt {
 	u64 root;
 };
 
-struct walk_info {
-	int (*fn)(void *key, int32_t ksize, void *value,
-		  s32 vsize, void *data);
-	struct dedup_config *dc;
-	s32 ksize;
-	s32 vsize;
-};
-
 enum superblock_flags {
 	CLEAN_SHUTDOWN /* on disk flag to mark clean shutdown */
 };
