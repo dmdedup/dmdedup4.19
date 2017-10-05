@@ -322,12 +322,12 @@ static int verify_superblock(struct dm_block_manager *bm)
 	if (!(disk_super->flags & (1 << CLEAN_SHUTDOWN)))
 		DMWARN("Possible data Inconsistency. Run dmdedup_corruption_check tool");
 
-	goto unblock_superblock;
+	goto unlock_superblock;
 
 bad_sb:
 	r = -1;
 
-unblock_superblock:
+unlock_superblock:
 	dm_bm_unlock(sblock);
 
 out:
@@ -374,7 +374,7 @@ static struct metadata *init_meta_cowbtree(void *input_param, bool *unformatted)
 		ret = verify_superblock(meta_bm);
 		if (ret < 0) {
 			DMERR("superblock verification failed");
-			/* XXX: handlr error */
+			/* XXX: handle error */
 		}
 
 		md->meta_bm = meta_bm;
@@ -541,7 +541,7 @@ static int kvs_delete_linear_cowbtree(struct kvstore *kvs,
 	if (ksize != kvs->ksize)
 		return -EINVAL;
 
-	r = dm_btree_remove(&kvcbt->info, kvcbt->root, key, &kvcbt->root);
+	r = dm_btree_remove(&(kvcbt->info), kvcbt->root, key, &(kvcbt->root));
 
 	if (r == -ENODATA)
 		return -ENODEV;
@@ -567,7 +567,7 @@ static int kvs_lookup_linear_cowbtree(struct kvstore *kvs, void *key,
 	if (ksize != kvs->ksize)
 		return -EINVAL;
 
-	r = dm_btree_lookup(&kvcbt->info, kvcbt->root, key, value);
+	r = dm_btree_lookup(&(kvcbt->info), kvcbt->root, key, value);
 
 	if (r == -ENODATA)
 		return 0;
@@ -593,8 +593,8 @@ static int kvs_insert_linear_cowbtree(struct kvstore *kvs, void *key,
 		return -EINVAL;
 
 	__dm_bless_for_disk(value);
-	return dm_btree_insert_notify(&kvcbt->info, kvcbt->root, key,
-				      value, &kvcbt->root, &inserted);
+	return dm_btree_insert_notify(&(kvcbt->info), kvcbt->root, key,
+				      value, &(kvcbt->root), &inserted);
 }
 
 static struct kvstore *kvs_create_linear_cowbtree(struct metadata *md,
@@ -640,7 +640,7 @@ static struct kvstore *kvs_create_linear_cowbtree(struct metadata *md,
 		md->kvs_linear = kvs;
 		__begin_transaction(md);
 	} else {
-		r = dm_btree_empty(&kvs->info, &kvs->root);
+		r = dm_btree_empty(&(kvs->info), &(kvs->root));
 		if (r < 0) {
 			kvs = ERR_PTR(r);
 			goto badtree;
@@ -657,7 +657,7 @@ static struct kvstore *kvs_create_linear_cowbtree(struct metadata *md,
 		md->kvs_linear = kvs;
 	}
 
-	return &kvs->ckvs;
+	return &(kvs->ckvs);
 
 badtree:
 	kfree(kvs);
@@ -689,14 +689,14 @@ static int kvs_delete_sparse_cowbtree(struct kvstore *kvs,
 
 repeat:
 
-	r = dm_btree_lookup(&kvcbt->info, kvcbt->root, &key_val, entry);
+	r = dm_btree_lookup(&(kvcbt->info), kvcbt->root, &key_val, entry);
 	if (r == -ENODATA) {
 		return -ENODEV;
 	} else if (r >= 0) {
 		if (!memcmp(entry, key, ksize)) {
-			r = dm_btree_remove(&kvcbt->info,
+			r = dm_btree_remove(&(kvcbt->info),
 					    kvcbt->root, &key_val,
-					    &kvcbt->root);
+					    &(kvcbt->root));
 			kfree(entry);
 			return r;
 		}
@@ -734,7 +734,7 @@ static int kvs_lookup_sparse_cowbtree(struct kvstore *kvs, void *key,
 
 repeat:
 
-	r = dm_btree_lookup(&kvcbt->info, kvcbt->root, &key_val, entry);
+	r = dm_btree_lookup(&(kvcbt->info), kvcbt->root, &key_val, entry);
 	if (r == -ENODATA) {
 		kfree(entry);
 		return 0;
@@ -777,13 +777,13 @@ static int kvs_insert_sparse_cowbtree(struct kvstore *kvs, void *key,
 
 repeat:
 
-	r = dm_btree_lookup(&kvcbt->info, kvcbt->root, &key_val, entry);
+	r = dm_btree_lookup(&(kvcbt->info), kvcbt->root, &key_val, entry);
 	if (r == -ENODATA) {
 		memcpy(entry, key, ksize);
 		memcpy(entry + ksize, value, vsize);
 		__dm_bless_for_disk(&key_val);
-		r = dm_btree_insert(&kvcbt->info, kvcbt->root, &key_val,
-				    entry, &kvcbt->root);
+		r = dm_btree_insert(&(kvcbt->info), kvcbt->root, &key_val,
+				    entry, &(kvcbt->root));
 		kfree(entry);
 		return r;
 	} else if (r >= 0) {
@@ -813,17 +813,17 @@ static int kvs_iterate_sparse_cowbtree(struct kvstore *kvs,
 	value = kmalloc(kvs->vsize, GFP_NOIO);
 
 	/* Get the lowest and highest keys in the key value store */
-	r = dm_btree_find_lowest_key(&kvcbt->info, kvcbt->root, &lowest);
+	r = dm_btree_find_lowest_key(&(kvcbt->info), kvcbt->root, &lowest);
 	if (r <= 0)
 		goto out_kvs_iterate;
 
-	r = dm_btree_find_highest_key(&kvcbt->info, kvcbt->root, &highest);
+	r = dm_btree_find_highest_key(&(kvcbt->info), kvcbt->root, &highest);
 	if (r <= 0)
 		goto out_kvs_iterate;
 
 	while (lowest <= highest) {
 		/* Get the next entry entry in the kvs store */
-		r = dm_btree_lookup_next(&kvcbt->info, kvcbt->root,
+		r = dm_btree_lookup_next(&(kvcbt->info), kvcbt->root,
 					 &lowest, &lowest, (void *)entry);
 
 		lowest++;
@@ -889,7 +889,7 @@ static struct kvstore *kvs_create_sparse_cowbtree(struct metadata *md,
 		md->kvs_sparse = kvs;
 		__begin_transaction(md);
 	} else {
-		r = dm_btree_empty(&kvs->info, &kvs->root);
+		r = dm_btree_empty(&(kvs->info), &(kvs->root));
 		if (r < 0) {
 			kvs = ERR_PTR(r);
 			goto badtree;
@@ -906,7 +906,7 @@ static struct kvstore *kvs_create_sparse_cowbtree(struct metadata *md,
 		md->kvs_sparse = kvs;
 	}
 
-	return &kvs->ckvs;
+	return &(kvs->ckvs);
 
 badtree:
 	kfree(kvs);
