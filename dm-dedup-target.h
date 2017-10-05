@@ -63,6 +63,7 @@ struct dedup_config {
 
 	struct workqueue_struct *workqueue;
 
+	struct bio_set *bs;
 	struct hash_desc_table *desc_table;
 
 	u64 logical_block_counter;	/* Total number of used LBNs */
@@ -75,6 +76,13 @@ struct dedup_config {
 	u64	reads_on_writes;
 	u64	overwrites;	/* writes to a prev. written offset */
 	u64	newwrites;	/* writes to never written offsets */
+
+	/* flag to check for data corruption */
+	bool	check_corruption;
+	bool	fec;		/* flag to fix block corruption */
+	u64	fec_fixed;	/* number of corruptions fixed */
+	/* Total number of corruptions encountered */
+	u64	corrupted_blocks;
 
 	/* used for read-on-write of misaligned requests */
 	struct dm_io_client *io_client;
@@ -92,6 +100,7 @@ struct dedup_config {
 	u64 writes_after_flush;	/* # of writes after the last flush */
 
 	mempool_t *dedup_work_pool;	/* Dedup work pool */
+	mempool_t *check_work_pool;	/* Corruption check work pool */
 };
 
 /* Value of the HASH-PBN key-value store */
