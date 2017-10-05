@@ -112,7 +112,7 @@ static int __begin_transaction(struct metadata *md)
 	return r;
 }
 
-static int __commit_transaction(struct metadata *md, bool destroy_flag)
+static int __commit_transaction(struct metadata *md, bool clean_shutdown_flag)
 {
 	int r = 0;
 	size_t metadata_len, data_len;
@@ -145,7 +145,7 @@ static int __commit_transaction(struct metadata *md, bool destroy_flag)
 	disk_super = dm_block_data(sblock);
 
 	/* if destroy flag is set, set the bit 1 otherwise 0 */
-	if (destroy_flag)
+	if (clean_shutdown_flag)
 		disk_super->flags |= (1 << CLEAN_SHUTDOWN);
 	else
 		disk_super->flags &= ~(1 << CLEAN_SHUTDOWN);
@@ -464,8 +464,8 @@ static void exit_meta_cowbtree(struct metadata *md)
 {
 	int ret;
 
-	bool destroy_flag = true;
-	ret = __commit_transaction(md, destroy_flag);
+	bool clean_shutdown_flag = true;
+	ret = __commit_transaction(md, clean_shutdown_flag);
 	if (ret < 0)
 		DMWARN("%s: __commit_transaction() failed, error = %d.",
 		       __func__, ret);
@@ -485,8 +485,8 @@ static int flush_meta_cowbtree(struct metadata *md)
 {
 	int r;
 
-	bool destroy_flag = false;
-	r = __commit_transaction(md, destroy_flag);
+	bool clean_shutdown_flag = false;
+	r = __commit_transaction(md, clean_shutdown_flag);
 	if (r < 0)
 		return r;
 
