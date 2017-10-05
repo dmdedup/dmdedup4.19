@@ -809,8 +809,16 @@ static int kvs_iterate_sparse_cowbtree(struct kvstore *kvs,
 	kvcbt = container_of(kvs, struct kvstore_cbt, ckvs);
 
 	entry = kmalloc(kvs->ksize + kvs->vsize, GFP_NOIO);
+	if (!entry)
+		goto out_entry;
+
 	key = kmalloc(kvs->ksize, GFP_NOIO);
+	if (!key)
+		goto out_key;
+
 	value = kmalloc(kvs->vsize, GFP_NOIO);
+	if (!value)
+		goto out_value;
 
 	/* Get the lowest and highest keys in the key value store */
 	r = dm_btree_find_lowest_key(&(kvcbt->info), kvcbt->root, &lowest);
@@ -842,10 +850,15 @@ static int kvs_iterate_sparse_cowbtree(struct kvstore *kvs,
 	}
 
 out_kvs_iterate:
-	kfree(entry);
-	kfree(key);
 	kfree(value);
 
+out_value:
+	kfree(key);
+
+out_key:
+	kfree(entry);
+
+out_entry:
 	return r;
 }
 
