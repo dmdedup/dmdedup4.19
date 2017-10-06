@@ -23,8 +23,11 @@
 #include "dm-dedup-ram.h"
 #include "dm-dedup-cbt.h"
 #include "dm-dedup-kvstore.h"
+#include "dm-dedup-check.h"
 
 #define MAX_DEV_NAME_LEN (64)
+
+#define MIN_IOS 64
 
 #define MIN_DATA_DEV_BLOCK_SIZE (4 * 1024)
 #define MAX_DATA_DEV_BLOCK_SIZE (1024 * 1024)
@@ -86,20 +89,71 @@ static int handle_read(struct dedup_config *dc, struct bio *bio)
 	u64 lbn;
 	u32 vsize;
 	struct lbn_pbn_value lbnpbn_value;
+	struct check_io *io;
+	struct bio *clone;
 	int r;
 
 	lbn = bio_lbn(dc, bio);
 
+	
+	/* get the pbn in LBN->PBN store for incoming lbn */
 	r = dc->kvs_lbn_pbn->kvs_lookup(dc->kvs_lbn_pbn, (void *)&lbn,
 			sizeof(lbn), (void *)&lbnpbn_value, &vsize);
-	if (r == 0)
-		bio_zero_endio(bio);
-	else if (r == 1)
-		do_io(dc, bio, lbnpbn_value.pbn);
-	else
-		return r;
 
-	return 0;
+	if (r == 0) { 
+		/* unable to find the entry in LBN->PBN store */
+		
+		bio_zero_endio(bio);
+	} else if (r == 1) { 
+		/* entry found in the LBN->PBN store */
+		
+		/* if corruption check not enabled directly do io request */
+		if (!dc->check_corruption) {
+			clone = bio;
+			goto read_no_fec;
+		}
+
+		/* Prepare check_io structure to be later used for FEC */
+		io = kmalloc(sizeof(struct check_io), GFP_NOIO);
+		io->dc = dc;
+		io->pbn = lbnpbn_value.pbn;
+		io->lbn = lbn;
+		io->base_bio = bio;
+
+		/* 
+ 		 * Prepare bio clone to handle disk read
+ 		 * clone is created so that we can have our own endio 
+ 		 * where we call bio_endio on original bio 
+ 		 * after corruption checks are done
+ 		 */
+		clone = bio_clone_fast(bio, GFP_NOIO, dc->bs);
+		if (!clone) {
+			r = -ENOMEM;
+			goto out_clone_fail;
+		}
+
+		/* 
+ 		 * Store the check_io structure in bio's private field
+ 		 * used as indirect argument when disk read is finished
+ 		 */
+		clone->bi_end_io = dedup_check_endio;
+		clone->bi_private = io;
+
+read_no_fec:
+		do_io(dc, clone, lbnpbn_value.pbn);
+	} else {
+		goto out;
+	}
+
+	r = 0;
+	goto out;
+
+out_clone_fail:
+	kfree(io);
+
+out:
+	return r;
+
 }
 
 static int allocate_block(struct dedup_config *dc, uint64_t *pbn_new)
@@ -337,6 +391,10 @@ static int handle_write(struct dedup_config *dc, struct bio *bio)
 	u32 vsize;
 	struct bio *new_bio = NULL;
 	int r;
+
+	/* If there is a data corruption make the device read-only */
+	if (dc->corrupted_blocks > dc->fec_fixed)
+		return -EIO;
 
 	dc->writes++;
 
@@ -633,6 +691,7 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	u64 physical_block_counter = 0;
 
 	mempool_t *dedup_work_pool = NULL;
+	mempool_t *check_work_pool = NULL;
 
 	bool unformatted;
 
@@ -650,6 +709,13 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		goto out;
 	}
 
+	dc->bs = bioset_create(MIN_IOS, 0);
+	if (!dc->bs) {
+		ti->error = "failed to create bioset";
+		r = -ENOMEM;
+		goto bad_bs;
+	}
+
 	wq = create_singlethread_workqueue("dm-dedup");
 	if (!wq) {
 		ti->error = "failed to create workqueue";
@@ -660,10 +726,19 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	dedup_work_pool = mempool_create_kmalloc_pool(MIN_DEDUP_WORK_IO,
 						      sizeof(struct dedup_work));
 	if (!dedup_work_pool) {
-		ti->error = "failed to create mempool";
+		ti->error = "failed to create dedup mempool";
 		r = -ENOMEM;
-		goto bad_mempool;
+		goto bad_dedup_mempool;
 	}
+
+	check_work_pool = mempool_create_kmalloc_pool(MIN_DEDUP_WORK_IO,
+						sizeof(struct check_work));
+	if (!check_work_pool) {
+		ti->error = "failed to create fec mempool";
+		r = -ENOMEM;
+		goto bad_check_mempool;
+	}
+
 
 	dc->io_client = dm_io_client_create();
 	if (IS_ERR(dc->io_client)) {
@@ -754,6 +829,7 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	dc->workqueue = wq;
 	dc->dedup_work_pool = dedup_work_pool;
+	dc->check_work_pool = check_work_pool;
 	dc->bmd = md;
 
 	dc->logical_block_counter = logical_block_counter;
@@ -766,6 +842,10 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	dc->reads_on_writes = 0;
 	dc->overwrites = 0;
 	dc->newwrites = 0;
+
+	dc->fec = false;
+	dc->fec_fixed = 0;
+	dc->corrupted_blocks = 0;
 
 	strcpy(dc->crypto_alg, da.hash_algo);
 	dc->crypto_key_size = crypto_key_size;
@@ -784,7 +864,6 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	ti->flush_supported = true;
 
 	ti->private = dc;
-
 	return 0;
 
 bad_kvstore_init:
@@ -794,10 +873,14 @@ bad_metadata_init:
 		dc->mdops->exit_meta(md);
 	dm_io_client_destroy(dc->io_client);
 bad_io_client:
+	mempool_destroy(check_work_pool);
+bad_check_mempool:
 	mempool_destroy(dedup_work_pool);
-bad_mempool:
+bad_dedup_mempool:
 	destroy_workqueue(wq);
 bad_wq:
+	kfree(dc->bs);
+bad_bs:
 	kfree(dc);
 out:
 	destroy_dedup_args(&da);
@@ -946,6 +1029,25 @@ static int dm_dedup_message(struct dm_target *ti,
 			dc->mdops->flush_bufio_cache(dc->bmd);
 		else
 			r = -ENOTSUPP;
+	} else if (!strcasecmp(argv[0], "corruption")) {
+                if (argc != 2) {
+                        DMINFO("Incomplete message: Usage corruption <0,1,2>:"
+				"0 - disable all corruption check flags, "
+				"1 - Enable corruption check, "
+				"2 - Enable FEC flag  (also enable corruption check if disabled)");
+                        r = -EINVAL;
+                } else if (!strcasecmp(argv[1], "1")) {
+                        dc->check_corruption = true;
+                        dc->fec = false;
+                } else if (!strcasecmp(argv[1], "2")) {
+                        dc->check_corruption = true;
+                        dc->fec = true;
+                } else if (!strcasecmp(argv[1], "0")) {
+                        dc->fec = false;
+                        dc->check_corruption = false;
+                } else {
+                        r = -EINVAL;
+                }
 	} else {
 		r = -EINVAL;
 	}
