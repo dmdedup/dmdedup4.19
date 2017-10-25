@@ -516,6 +516,8 @@ struct dedup_args {
 	char backend_str[MAX_BACKEND_NAME_LEN];
 
 	u32 flushrq;
+	
+	bool corruption_flag;
 };
 
 static int parse_meta_dev(struct dedup_args *da, struct dm_arg_set *as,
@@ -615,18 +617,33 @@ static int parse_flushrq(struct dedup_args *da, struct dm_arg_set *as,
 	return 0;
 }
 
+static int parse_corruption_flag(struct dedup_args *da, struct dm_arg_set *as,
+			 char **err)
+{
+	bool corruption_flag;
+
+        if (kstrtobool(dm_shift_arg(as), &corruption_flag)) {
+                *err = "Invalid corruption flag value";
+                return -EINVAL;
+        }
+
+        da->corruption_flag = corruption_flag;
+
+        return 0;
+
+}
 static int parse_dedup_args(struct dedup_args *da, int argc,
 			    char **argv, char **err)
 {
 	struct dm_arg_set as;
 	int r;
 
-	if (argc < 6) {
+	if (argc < 7) {
 		*err = "Insufficient args";
 		return -EINVAL;
 	}
 
-	if (argc > 6) {
+	if (argc > 7) {
 		*err = "Too many args";
 		return -EINVAL;
 	}
@@ -655,6 +672,10 @@ static int parse_dedup_args(struct dedup_args *da, int argc,
 		return r;
 
 	r = parse_flushrq(da, &as, err);
+	if (r)
+		return r;
+	
+	r = parse_corruption_flag(da, &as, err);
 	if (r)
 		return r;
 
@@ -843,6 +864,7 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	dc->overwrites = 0;
 	dc->newwrites = 0;
 
+	dc->check_corruption = da.corruption_flag;
 	dc->fec = false;
 	dc->fec_fixed = 0;
 	dc->corrupted_blocks = 0;
