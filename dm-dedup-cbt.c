@@ -352,7 +352,6 @@ static struct metadata *init_meta_cowbtree(void *input_param, bool *unformatted)
 		return ERR_PTR(-ENOMEM);
 
 	meta_bm = dm_block_manager_create(p->metadata_bdev, METADATA_BSIZE,
-					  METADATA_CACHESIZE,
 					  METADATA_MAXLOCKS);
 	if (IS_ERR(meta_bm)) {
 		md = (struct metadata *)meta_bm;
