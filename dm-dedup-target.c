@@ -55,7 +55,7 @@ enum backend {
 static void bio_zero_endio(struct bio *bio)
 {
 	zero_fill_bio(bio);
-	bio->bi_error = 0;
+	bio->bi_status = BLK_STS_OK;
 	bio_endio(bio);
 }
 
@@ -331,7 +331,7 @@ out_inc_refcount_1:
 		dc->newwrites--;
 out_1:
 		if (r >= 0) {
-			bio->bi_error = 0;
+			bio->bi_status = BLK_STS_OK;
 			bio_endio(bio);
 		} else {
 			dc->dupwrites--;
@@ -375,7 +375,7 @@ out_inc_refcount_2:
 	dc->overwrites--;
 out_2:
 	if (r >= 0) {
-		bio->bi_error = 0;
+		bio->bi_status = BLK_STS_OK;
 		bio_endio(bio);
 	} else {
 		dc->dupwrites--;
@@ -458,7 +458,7 @@ static void process_bio(struct dedup_config *dc, struct bio *bio)
 	}
 
 	if (r < 0) {
-		bio->bi_error = r;
+		bio->bi_status = BLK_STS_IOERR;
 		bio_endio(bio);
 	}
 }
@@ -480,7 +480,7 @@ static void dedup_defer_bio(struct dedup_config *dc, struct bio *bio)
 
 	data = mempool_alloc(dc->dedup_work_pool, GFP_NOIO);
 	if (!data) {
-		bio->bi_error = -ENOMEM;
+		bio->bi_status = -BLK_STS_RESOURCE;
 		bio_endio(bio);
 		return;
 	}
@@ -730,7 +730,7 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		goto out;
 	}
 
-	dc->bs = bioset_create(MIN_IOS, 0);
+	dc->bs = bioset_create(MIN_IOS, 0, BIOSET_NEED_BVECS);
 	if (!dc->bs) {
 		ti->error = "failed to create bioset";
 		r = -ENOMEM;
