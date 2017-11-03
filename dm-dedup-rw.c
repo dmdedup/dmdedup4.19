@@ -116,7 +116,7 @@ static void my_endio(struct bio *clone)
 	}
 
 	orig = clone->bi_private;
-	orig->bi_error = 0;
+	orig->bi_status = BLK_STS_OK;
 	bio_endio(orig);
 
 	bio_put(clone);

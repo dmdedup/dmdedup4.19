@@ -40,7 +40,7 @@ static void check_endio(struct bio *bio, struct check_io *io)
 	struct lbn_pbn_value lbnpbn_value;
 	u32 vsize;
 
-	if (bio->bi_error < 0)
+	if (bio->bi_status)
 		goto out;
 
 	dc = io->dc;
@@ -128,7 +128,7 @@ out_fec_pass:
 
 no_fec:
 out_fec_fail:
-	bio->bi_error = -EIO;
+	bio->bi_status = BLK_STS_IOERR;
 
 out_corruption:
 	dc->corrupted_blocks++;
