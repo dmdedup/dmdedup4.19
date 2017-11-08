@@ -730,6 +730,7 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		goto out;
 	}
 
+	/* Do we need to add BIOSET_NEED_RESCURE in the flags passed in bioset_create as well? */
 	dc->bs = bioset_create(MIN_IOS, 0, BIOSET_NEED_BVECS);
 	if (!dc->bs) {
 		ti->error = "failed to create bioset";
