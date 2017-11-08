@@ -30,7 +30,6 @@
 #define UINT32_MAX	(4294967295U)
 
 #define METADATA_BSIZE 4096
-#define METADATA_CACHESIZE 64  /* currently block manager ignores this value */
 #define METADATA_MAXLOCKS 5
 #define METADATA_SUPERBLOCK_LOCATION 0
 #define PRIVATE_DATA_SIZE 16 /* physical and logical block counter */
