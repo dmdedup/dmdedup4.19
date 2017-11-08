@@ -480,7 +480,7 @@ static void dedup_defer_bio(struct dedup_config *dc, struct bio *bio)
 
 	data = mempool_alloc(dc->dedup_work_pool, GFP_NOIO);
 	if (!data) {
-		bio->bi_status = -BLK_STS_RESOURCE;
+		bio->bi_status = BLK_STS_RESOURCE;
 		bio_endio(bio);
 		return;
 	}
