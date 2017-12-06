@@ -175,6 +175,7 @@ The message to disable both Corruption Check and Forward Error Correction mode:
 Target Size
 ======================
 
+<<<<<<< HEAD
 
 When using device-mapper one needs to specify the target size in advance.
 To get deduplication benefits, the target size should be larger than the data device size (or otherwise one could just use the data device directly).
@@ -185,6 +186,18 @@ Usually, up to 1.5 deduplication ratio for a primary dataset is a safe assumptio
 For backup datasets, however, deduplication ratio can be as high as 100:1.
 
 
+=======
+
+When using device-mapper one needs to specify the target size in advance.
+To get deduplication benefits, the target size should be larger than the data device size (or otherwise one could just use the data device directly).
+Because the dataset’s deduplication ratio is not known in advance one has to use an estimation.
+
+
+Usually, up to 1.5 deduplication ratio for a primary dataset is a safe assumption.
+For backup datasets, however, deduplication ratio can be as high as 100:1.
+
+
+>>>>>>> c339e22c065c4bf450f446f30f0ba441a5e19f35
 Estimating deduplication ratio of an existing dataset using fs-hasher package from [http://tracer.filesystems.org/](http://tracer.filesystems.org/) can give a good starting point for a specific dataset.
 
 
@@ -210,10 +223,17 @@ Details on this framework and its on-disk layout can be found here:
 Documentation/device-mapper/persistent-data.txt
 ```
 
+<<<<<<< HEAD
 
 By using persistent COW B-trees, cowbtree backend guarantees consistency in the event of power failure.
 
 
+=======
+
+By using persistent COW B-trees, cowbtree backend guarantees consistency in the event of power failure.
+
+
+>>>>>>> c339e22c065c4bf450f446f30f0ba441a5e19f35
 In addition, we also provide an inram backend that stores all metadata in RAM.
 Hash tables with linear probing are used for storing the index and LBN-PBN mapping.
 The inram backend does not store metadata persistently and should usually be used only for experiments.
@@ -221,10 +241,17 @@ The inram backend does not store metadata persistently and should usually be use
 
 Dmsetup Status
 ==========
+<<<<<<< HEAD
 
 
 Dm-dedup exports various statistics via dmsetup status command. The line returned by dmsetup status will contain the following values in the order:
 
+=======
+
+
+Dm-dedup exports various statistics via dmsetup status command. The line returned by dmsetup status will contain the following values in the order:
+
+>>>>>>> c339e22c065c4bf450f446f30f0ba441a5e19f35
 ```
 <name> <start> <end> <type> \
 <dtotal> <dfree> <dused> <dactual> <dblock> <ddisk> <mddisk> \
@@ -295,6 +322,13 @@ Authors
 
 dm-dedup was developed in the File system and Storage Lab (FSL) at Stony Brook University Computer Science Department, in collaboration with Harvey Mudd College and Dell-EMC.
 
+<<<<<<< HEAD
+
+Key people involved in the project were Vasily Tarasov, Geoff Kuenning, Sonam Mandal, Karthikeyani Palanisami, Philip Shilane, Sagar Trehan, and Erez Zadok.
+
+
+We also acknowledge the help of several students involved in the deduplication project: Teo Asinari, Deepak Jain, Mandar Joshi, Atul Karmarkar, Gary Lent, Amar Mudrankit, Meg O'Keefe, Nidhi Panpalia, Vinothkumar Raja, Ujwala Tulshigiri and Nabil Zaman.
+=======
 
 Key people involved in the project were Vasily Tarasov, Geoff Kuenning, Sonam Mandal, Karthikeyani Palanisami, Philip Shilane, Sagar Trehan, and Erez Zadok.
 
