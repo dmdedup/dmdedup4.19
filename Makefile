@@ -1,6 +1,6 @@
 obj-m += dm-dedup.o
 
-dm-dedup-objs := dm-dedup-cbt.o dm-dedup-hash.o dm-dedup-ram.o  dm-dedup-rw.o dm-dedup-target.o
+dm-dedup-objs := dm-dedup-cbt.o dm-dedup-hash.o dm-dedup-ram.o dm-dedup-check.o dm-dedup-rw.o dm-dedup-target.o
 
 EXTRA_CFLAGS := -Idrivers/md
 

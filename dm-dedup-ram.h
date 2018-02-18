@@ -1,12 +1,13 @@
 /*
- * Copyright (C) 2012-2014 Vasily Tarasov
+ * Copyright (C) 2012-2017 Vasily Tarasov
  * Copyright (C) 2012-2014 Geoff Kuenning
  * Copyright (C) 2012-2014 Sonam Mandal
  * Copyright (C) 2012-2014 Karthikeyani Palanisami
  * Copyright (C) 2012-2014 Philip Shilane
  * Copyright (C) 2012-2014 Sagar Trehan
- * Copyright (C) 2012-2014 Erez Zadok
- *
+ * Copyright (C) 2012-2017 Erez Zadok
+ * Copyright (c) 2012-2017 Stony Brook University
+ * Copyright (c) 2012-2017 The Research Foundation for SUNY
  * This file is released under the GPL.
  */
 
@@ -37,7 +38,7 @@
 extern struct metadata_ops metadata_ops_inram;
 
 struct init_param_inram {
-	uint64_t blocks;
+	u64 blocks;
 };
 
 #endif /* INRAM_BACKEND_H */

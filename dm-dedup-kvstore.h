@@ -1,12 +1,13 @@
 /*
- * Copyright (C) 2012-2014 Vasily Tarasov
+ * Copyright (C) 2012-2017 Vasily Tarasov
  * Copyright (C) 2012-2014 Geoff Kuenning
  * Copyright (C) 2012-2014 Sonam Mandal
  * Copyright (C) 2012-2014 Karthikeyani Palanisami
  * Copyright (C) 2012-2014 Philip Shilane
  * Copyright (C) 2012-2014 Sagar Trehan
- * Copyright (C) 2012-2014 Erez Zadok
- *
+ * Copyright (C) 2012-2017 Erez Zadok
+ * Copyright (c) 2012-2017 Stony Brook University
+ * Copyright (c) 2012-2017 The Research Foundation for SUNY
  * This file is released under the GPL.
  */
 
@@ -35,17 +36,17 @@
 #include "dm-dedup-target.h"
 
 struct kvstore {
-	uint32_t vsize;
-	uint32_t ksize;
+	u32 vsize;
+	u32 ksize;
 
 	int (*kvs_delete)(struct kvstore *kvs, void *key, int32_t ksize);
 	int (*kvs_lookup)(struct kvstore *kvs, void *key, int32_t ksize,
-				void *value, int32_t *vsize);
+			  void *value, int32_t *vsize);
 	int (*kvs_insert)(struct kvstore *kvs, void *key, int32_t ksize,
-				void *value, int32_t vsize);
+			  void *value, int32_t vsize);
 	int (*kvs_iterate)(struct kvstore *kvs, int (*itr_action)
 				(void *key, int32_t ksize, void *value,
-				 int32_t vsize, void *data), void *data);
+				 s32 vsize, void *data), void *data);
 };
 
 #endif /* KVSTORE_H */

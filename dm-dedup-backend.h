@@ -1,12 +1,13 @@
 /*
- * Copyright (C) 2012-2014 Vasily Tarasov
+ * Copyright (C) 2012-2017 Vasily Tarasov
  * Copyright (C) 2012-2014 Geoff Kuenning
  * Copyright (C) 2012-2014 Sonam Mandal
  * Copyright (C) 2012-2014 Karthikeyani Palanisami
  * Copyright (C) 2012-2014 Philip Shilane
  * Copyright (C) 2012-2014 Sagar Trehan
- * Copyright (C) 2012-2014 Erez Zadok
- *
+ * Copyright (C) 2012-2017 Erez Zadok
+ * Copyright (c) 2012-2017 Stony Brook University
+ * Copyright (c) 2012-2017 The Research Foundation for SUNY
  * This file is released under the GPL.
  */
 
@@ -39,8 +40,8 @@ struct metadata_ops {
 	 * Valid pointer on success.
 	 */
 	struct kvstore * (*kvs_create_linear)(struct metadata *md,
-			uint32_t ksize, uint32_t vsize, uint32_t kmax,
-			bool unformatted);
+					      u32 ksize, uint32_t vsize,
+					      u32 kmax, bool unformatted);
 	/*
 	 * Creates sparse key-value store. Ksize and vsize in bytes.
 	 * If ksize or vsize are equal to zero, it means that keys
@@ -52,8 +53,8 @@ struct metadata_ops {
 	 * Valid pointer on success.
 	 */
 	struct kvstore * (*kvs_create_sparse)(struct metadata *md,
-			uint32_t ksize, uint32_t vsize, uint32_t knummax,
-			bool unformatted);
+					      u32 ksize, uint32_t vsize,
+					      u32 knummax, bool unformatted);
 
 	/*
 	 * Returns -ERR* on error.
@@ -93,7 +94,7 @@ struct metadata_ops {
 	 * Returns 0 on success.
 	 */
 	int (*get_private_data)(struct metadata *md, void **data,
-			uint32_t size);
+				uint32_t size);
 
 	/*
 	 * Fills in private data stored in the metadata.

@@ -1,12 +1,15 @@
 /*
- * Copyright (C) 2012-2014 Vasily Tarasov
+ * Copyright (C) 2012-2017 Vasily Tarasov
  * Copyright (C) 2012-2014 Geoff Kuenning
  * Copyright (C) 2012-2014 Sonam Mandal
  * Copyright (C) 2012-2014 Karthikeyani Palanisami
  * Copyright (C) 2012-2014 Philip Shilane
  * Copyright (C) 2012-2014 Sagar Trehan
- * Copyright (C) 2012-2014 Erez Zadok
- *
+ * Copyright (C) 2012-2017 Erez Zadok
+ * Copyright (c) 2016-2017 Vinothkumar Raja
+ * Copyright (c) 2017-2017 Nidhi Panpalia
+ * Copyright (c) 2012-2017 Stony Brook University
+ * Copyright (c) 2012-2017 The Research Foundation for SUNY
  * This file is released under the GPL.
  */
 
@@ -20,15 +23,18 @@
 #include "dm-dedup-ram.h"
 #include "dm-dedup-cbt.h"
 #include "dm-dedup-kvstore.h"
+#include "dm-dedup-check.h"
 
 #define MAX_DEV_NAME_LEN (64)
+
+#define MIN_IOS 64
 
 #define MIN_DATA_DEV_BLOCK_SIZE (4 * 1024)
 #define MAX_DATA_DEV_BLOCK_SIZE (1024 * 1024)
 
 struct on_disk_stats {
-	uint64_t physical_block_counter;
-	uint64_t logical_block_counter;
+	u64 physical_block_counter;
+	u64 logical_block_counter;
 };
 
 /*
@@ -49,7 +55,7 @@ enum backend {
 static void bio_zero_endio(struct bio *bio)
 {
 	zero_fill_bio(bio);
-	bio->bi_error = 0;
+	bio->bi_status = BLK_STS_OK;
 	bio_endio(bio);
 }
 
@@ -80,23 +86,74 @@ static void do_io(struct dedup_config *dc, struct bio *bio, uint64_t pbn)
 
 static int handle_read(struct dedup_config *dc, struct bio *bio)
 {
-	uint64_t lbn;
-	uint32_t vsize;
+	u64 lbn;
+	u32 vsize;
 	struct lbn_pbn_value lbnpbn_value;
+	struct check_io *io;
+	struct bio *clone;
 	int r;
 
 	lbn = bio_lbn(dc, bio);
 
+	
+	/* get the pbn in LBN->PBN store for incoming lbn */
 	r = dc->kvs_lbn_pbn->kvs_lookup(dc->kvs_lbn_pbn, (void *)&lbn,
 			sizeof(lbn), (void *)&lbnpbn_value, &vsize);
-	if (r == 0)
-		bio_zero_endio(bio);
-	else if (r == 1)
-		do_io(dc, bio, lbnpbn_value.pbn);
-	else
-		return r;
 
-	return 0;
+	if (r == 0) { 
+		/* unable to find the entry in LBN->PBN store */
+		
+		bio_zero_endio(bio);
+	} else if (r == 1) { 
+		/* entry found in the LBN->PBN store */
+		
+		/* if corruption check not enabled directly do io request */
+		if (!dc->check_corruption) {
+			clone = bio;
+			goto read_no_fec;
+		}
+
+		/* Prepare check_io structure to be later used for FEC */
+		io = kmalloc(sizeof(struct check_io), GFP_NOIO);
+		io->dc = dc;
+		io->pbn = lbnpbn_value.pbn;
+		io->lbn = lbn;
+		io->base_bio = bio;
+
+		/* 
+ 		 * Prepare bio clone to handle disk read
+ 		 * clone is created so that we can have our own endio 
+ 		 * where we call bio_endio on original bio 
+ 		 * after corruption checks are done
+ 		 */
+		clone = bio_clone_fast(bio, GFP_NOIO, dc->bs);
+		if (!clone) {
+			r = -ENOMEM;
+			goto out_clone_fail;
+		}
+
+		/* 
+ 		 * Store the check_io structure in bio's private field
+ 		 * used as indirect argument when disk read is finished
+ 		 */
+		clone->bi_end_io = dedup_check_endio;
+		clone->bi_private = io;
+
+read_no_fec:
+		do_io(dc, clone, lbnpbn_value.pbn);
+	} else {
+		goto out;
+	}
+
+	r = 0;
+	goto out;
+
+out_clone_fail:
+	kfree(io);
+
+out:
+	return r;
+
 }
 
 static int allocate_block(struct dedup_config *dc, uint64_t *pbn_new)
@@ -140,8 +197,8 @@ static int handle_write_no_hash(struct dedup_config *dc,
 				struct bio *bio, uint64_t lbn, u8 *hash)
 {
 	int r;
-	uint32_t vsize;
-	uint64_t pbn_new, pbn_old;
+	u32 vsize;
+	u64 pbn_new, pbn_old;
 	struct lbn_pbn_value lbnpbn_value;
 	struct hash_pbn_value hashpbn_value;
 
@@ -183,8 +240,9 @@ out_1:
 		if (r < 0)
 			dc->uniqwrites--;
 		return r;
-	} else if (r < 0)
+	} else if (r < 0) {
 		goto out_2;
+	}
 
 	/* LBN->PBN mappings exist */
 	dc->overwrites++;
@@ -233,12 +291,12 @@ out_2:
 }
 
 static int handle_write_with_hash(struct dedup_config *dc, struct bio *bio,
-				  uint64_t lbn, u8 *final_hash,
+				  u64 lbn, u8 *final_hash,
 				  struct hash_pbn_value hashpbn_value)
 {
 	int r;
-	uint32_t vsize;
-	uint64_t pbn_new, pbn_old;
+	u32 vsize;
+	u64 pbn_new, pbn_old;
 	struct lbn_pbn_value lbnpbn_value;
 	struct lbn_pbn_value new_lbnpbn_value;
 
@@ -273,14 +331,15 @@ out_inc_refcount_1:
 		dc->newwrites--;
 out_1:
 		if (r >= 0) {
-			bio->bi_error = 0;
+			bio->bi_status = BLK_STS_OK;
 			bio_endio(bio);
-		}
-		else
+		} else {
 			dc->dupwrites--;
+		}
 		return r;
-	} else if (r < 0)
+	} else if (r < 0) {
 		goto out_2;
+	}
 
 	/* LBN->PBN mapping entry exists */
 	dc->overwrites++;
@@ -316,22 +375,26 @@ out_inc_refcount_2:
 	dc->overwrites--;
 out_2:
 	if (r >= 0) {
-		bio->bi_error = 0;
+		bio->bi_status = BLK_STS_OK;
 		bio_endio(bio);
-	}
-	else
+	} else {
 		dc->dupwrites--;
+	}
 	return r;
 }
 
 static int handle_write(struct dedup_config *dc, struct bio *bio)
 {
-	uint64_t lbn;
+	u64 lbn;
 	u8 hash[MAX_DIGEST_SIZE];
 	struct hash_pbn_value hashpbn_value;
-	uint32_t vsize;
+	u32 vsize;
 	struct bio *new_bio = NULL;
 	int r;
+
+	/* If there is a data corruption make the device read-only */
+	if (dc->corrupted_blocks > dc->fec_fixed)
+		return -EIO;
 
 	dc->writes++;
 
@@ -357,14 +420,14 @@ static int handle_write(struct dedup_config *dc, struct bio *bio)
 		r = handle_write_no_hash(dc, bio, lbn, hash);
 	else if (r > 0)
 		r = handle_write_with_hash(dc, bio, lbn, hash,
-					hashpbn_value);
+					   hashpbn_value);
 
 	if (r < 0)
 		return r;
 
 	dc->writes_after_flush++;
 	if ((dc->flushrq && dc->writes_after_flush >= dc->flushrq) ||
-			(bio->bi_opf & (REQ_PREFLUSH | REQ_FUA))) {
+	    (bio->bi_opf & (REQ_PREFLUSH | REQ_FUA))) {
 		r = dc->mdops->flush_meta(dc->bmd);
 		if (r < 0)
 			return r;
@@ -395,7 +458,24 @@ static void process_bio(struct dedup_config *dc, struct bio *bio)
 	}
 
 	if (r < 0) {
-		bio->bi_error = r;
+		switch (-1*r) {
+		case EWOULDBLOCK:
+			bio->bi_status = BLK_STS_AGAIN;
+			break;
+		case EINVAL:
+		case EIO:
+			bio->bi_status = BLK_STS_IOERR;
+			break;
+		case ENODATA:
+			bio->bi_status = BLK_STS_MEDIUM;
+			break;
+		case ENOMEM:
+			bio->bi_status = BLK_STS_RESOURCE;
+			break;
+		case EPERM:
+			bio->bi_status = BLK_STS_PROTECTION;
+			break;
+		}
 		bio_endio(bio);
 	}
 }
@@ -417,7 +497,7 @@ static void dedup_defer_bio(struct dedup_config *dc, struct bio *bio)
 
 	data = mempool_alloc(dc->dedup_work_pool, GFP_NOIO);
 	if (!data) {
-		bio->bi_error = -ENOMEM;
+		bio->bi_status = BLK_STS_RESOURCE;
 		bio_endio(bio);
 		return;
 	}
@@ -443,16 +523,18 @@ struct dedup_args {
 	struct dm_dev *meta_dev;
 
 	struct dm_dev *data_dev;
-	uint64_t data_size;
+	u64 data_size;
 
-	uint32_t block_size;
+	u32 block_size;
 
 	char hash_algo[CRYPTO_ALG_NAME_LEN];
 
 	enum backend backend;
 	char backend_str[MAX_BACKEND_NAME_LEN];
 
-	uint32_t flushrq;
+	u32 flushrq;
+	
+	bool corruption_flag;
 };
 
 static int parse_meta_dev(struct dedup_args *da, struct dm_arg_set *as,
@@ -461,7 +543,7 @@ static int parse_meta_dev(struct dedup_args *da, struct dm_arg_set *as,
 	int r;
 
 	r = dm_get_device(da->ti, dm_shift_arg(as),
-			dm_table_get_mode(da->ti->table), &da->meta_dev);
+			  dm_table_get_mode(da->ti->table), &da->meta_dev);
 	if (r)
 		*err = "Error opening metadata device";
 
@@ -474,7 +556,7 @@ static int parse_data_dev(struct dedup_args *da, struct dm_arg_set *as,
 	int r;
 
 	r = dm_get_device(da->ti, dm_shift_arg(as),
-			dm_table_get_mode(da->ti->table), &da->data_dev);
+			  dm_table_get_mode(da->ti->table), &da->data_dev);
 	if (r)
 		*err = "Error opening data device";
 	else
@@ -486,10 +568,10 @@ static int parse_data_dev(struct dedup_args *da, struct dm_arg_set *as,
 static int parse_block_size(struct dedup_args *da, struct dm_arg_set *as,
 			    char **err)
 {
-	uint32_t block_size;
+	u32 block_size;
 
 	if (kstrtou32(dm_shift_arg(as), 10, &block_size) ||
-		!block_size ||
+	    !block_size ||
 		block_size < MIN_DATA_DEV_BLOCK_SIZE ||
 		block_size > MAX_DATA_DEV_BLOCK_SIZE ||
 		!is_power_of_2(block_size)) {
@@ -527,11 +609,11 @@ static int parse_backend(struct dedup_args *da, struct dm_arg_set *as,
 
 	strlcpy(backend, dm_shift_arg(as), MAX_BACKEND_NAME_LEN);
 
-	if (!strcmp(backend, "inram"))
+	if (!strcmp(backend, "inram")) {
 		da->backend = BKND_INRAM;
-	else if (!strcmp(backend, "cowbtree"))
+	} else if (!strcmp(backend, "cowbtree")) {
 		da->backend = BKND_COWBTREE;
-	else {
+	} else {
 		*err = "Unsupported metadata backend";
 		return -EINVAL;
 	}
@@ -552,18 +634,33 @@ static int parse_flushrq(struct dedup_args *da, struct dm_arg_set *as,
 	return 0;
 }
 
+static int parse_corruption_flag(struct dedup_args *da, struct dm_arg_set *as,
+			 char **err)
+{
+	bool corruption_flag;
+
+        if (kstrtobool(dm_shift_arg(as), &corruption_flag)) {
+                *err = "Invalid corruption flag value";
+                return -EINVAL;
+        }
+
+        da->corruption_flag = corruption_flag;
+
+        return 0;
+
+}
 static int parse_dedup_args(struct dedup_args *da, int argc,
 			    char **argv, char **err)
 {
 	struct dm_arg_set as;
 	int r;
 
-	if (argc < 6) {
+	if (argc < 7) {
 		*err = "Insufficient args";
 		return -EINVAL;
 	}
 
-	if (argc > 6) {
+	if (argc > 7) {
 		*err = "Too many args";
 		return -EINVAL;
 	}
@@ -592,6 +689,10 @@ static int parse_dedup_args(struct dedup_args *da, int argc,
 		return r;
 
 	r = parse_flushrq(da, &as, err);
+	if (r)
+		return r;
+	
+	r = parse_corruption_flag(da, &as, err);
 	if (r)
 		return r;
 
@@ -624,10 +725,11 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	struct on_disk_stats d;
 	struct on_disk_stats *data = &d;
-	uint64_t logical_block_counter = 0;
-	uint64_t physical_block_counter = 0;
+	u64 logical_block_counter = 0;
+	u64 physical_block_counter = 0;
 
 	mempool_t *dedup_work_pool = NULL;
+	mempool_t *check_work_pool = NULL;
 
 	bool unformatted;
 
@@ -645,6 +747,14 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		goto out;
 	}
 
+	/* Do we need to add BIOSET_NEED_RESCURE in the flags passed in bioset_create as well? */
+	dc->bs = bioset_create(MIN_IOS, 0, BIOSET_NEED_BVECS);
+	if (!dc->bs) {
+		ti->error = "failed to create bioset";
+		r = -ENOMEM;
+		goto bad_bs;
+	}
+
 	wq = create_singlethread_workqueue("dm-dedup");
 	if (!wq) {
 		ti->error = "failed to create workqueue";
@@ -653,12 +763,21 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	}
 
 	dedup_work_pool = mempool_create_kmalloc_pool(MIN_DEDUP_WORK_IO,
-						sizeof(struct dedup_work));
+						      sizeof(struct dedup_work));
 	if (!dedup_work_pool) {
-		ti->error = "failed to create mempool";
+		ti->error = "failed to create dedup mempool";
 		r = -ENOMEM;
-		goto bad_mempool;
+		goto bad_dedup_mempool;
 	}
+
+	check_work_pool = mempool_create_kmalloc_pool(MIN_DEDUP_WORK_IO,
+						sizeof(struct check_work));
+	if (!check_work_pool) {
+		ti->error = "failed to create fec mempool";
+		r = -ENOMEM;
+		goto bad_check_mempool;
+	}
+
 
 	dc->io_client = dm_io_client_create();
 	if (IS_ERR(dc->io_client)) {
@@ -670,15 +789,15 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	dc->block_size = da.block_size;
 	dc->sectors_per_block = to_sector(da.block_size);
 	data_size = ti->len;
-	(void) sector_div(data_size, dc->sectors_per_block);
+	(void)sector_div(data_size, dc->sectors_per_block);
 	dc->lblocks = data_size;
 
 	data_size = i_size_read(da.data_dev->bdev->bd_inode) >> SECTOR_SHIFT;
-	(void) sector_div(data_size, dc->sectors_per_block);
+	(void)sector_div(data_size, dc->sectors_per_block);
 	dc->pblocks = data_size;
 
 	/* Meta-data backend specific part */
-	switch(da.backend) {
+	switch (da.backend) {
 	case BKND_INRAM:
 		dc->mdops = &metadata_ops_inram;
 		iparam_inram.blocks = dc->pblocks;
@@ -749,6 +868,7 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	dc->workqueue = wq;
 	dc->dedup_work_pool = dedup_work_pool;
+	dc->check_work_pool = check_work_pool;
 	dc->bmd = md;
 
 	dc->logical_block_counter = logical_block_counter;
@@ -761,6 +881,11 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	dc->reads_on_writes = 0;
 	dc->overwrites = 0;
 	dc->newwrites = 0;
+
+	dc->check_corruption = da.corruption_flag;
+	dc->fec = false;
+	dc->fec_fixed = 0;
+	dc->corrupted_blocks = 0;
 
 	strcpy(dc->crypto_alg, da.hash_algo);
 	dc->crypto_key_size = crypto_key_size;
@@ -779,7 +904,6 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	ti->flush_supported = true;
 
 	ti->private = dc;
-
 	return 0;
 
 bad_kvstore_init:
@@ -789,10 +913,14 @@ bad_metadata_init:
 		dc->mdops->exit_meta(md);
 	dm_io_client_destroy(dc->io_client);
 bad_io_client:
+	mempool_destroy(check_work_pool);
+bad_check_mempool:
 	mempool_destroy(dedup_work_pool);
-bad_mempool:
+bad_dedup_mempool:
 	destroy_workqueue(wq);
 bad_wq:
+	kfree(dc->bs);
+bad_bs:
 	kfree(dc);
 out:
 	destroy_dedup_args(&da);
@@ -836,13 +964,13 @@ static void dm_dedup_dtr(struct dm_target *ti)
 }
 
 static void dm_dedup_status(struct dm_target *ti, status_type_t status_type,
-			    unsigned status_flags, char *result, unsigned maxlen)
+			    unsigned int status_flags, char *result, unsigned int maxlen)
 {
 	struct dedup_config *dc = ti->private;
-	uint64_t data_total_block_count;
-	uint64_t data_used_block_count;
-	uint64_t data_free_block_count;
-	uint64_t data_actual_block_count;
+	u64 data_total_block_count;
+	u64 data_used_block_count;
+	u64 data_free_block_count;
+	u64 data_actual_block_count;
 	int sz = 0;
 
 	switch (status_type) {
@@ -855,32 +983,32 @@ static void dm_dedup_status(struct dm_target *ti, status_type_t status_type,
 			data_total_block_count - data_used_block_count;
 
 		DMEMIT("%llu %llu %llu %llu ",
-			data_total_block_count, data_free_block_count,
+		       data_total_block_count, data_free_block_count,
 			data_used_block_count, data_actual_block_count);
 
 		DMEMIT("%d %d:%d %d:%d ",
-			dc->block_size,
+		       dc->block_size,
 			MAJOR(dc->data_dev->bdev->bd_dev),
 			MINOR(dc->data_dev->bdev->bd_dev),
 			MAJOR(dc->metadata_dev->bdev->bd_dev),
 			MINOR(dc->metadata_dev->bdev->bd_dev));
 
 		DMEMIT("%llu %llu %llu %llu %llu %llu %llu",
-			dc->writes, dc->uniqwrites, dc->dupwrites,
+		       dc->writes, dc->uniqwrites, dc->dupwrites,
 			dc->reads_on_writes, dc->overwrites, dc->newwrites, dc->gc_counter);
 		break;
 	case STATUSTYPE_TABLE:
 		DMEMIT("%s %s %u %s %s %u",
-			dc->metadata_dev->name, dc->data_dev->name, dc->block_size,
+		       dc->metadata_dev->name, dc->data_dev->name, dc->block_size,
 			dc->crypto_alg, dc->backend_str, dc->flushrq);
 	}
 }
 
 static int cleanup_hash_pbn(void *key, int32_t ksize, void *value,
-			    int32_t vsize, void *data)
+			    s32 vsize, void *data)
 {
 	int r = 0;
-	uint64_t pbn_val = 0;
+	u64 pbn_val = 0;
 	struct hash_pbn_value hashpbn_value = *((struct hash_pbn_value *)value);
 	struct dedup_config *dc = (struct dedup_config *)data;
 
@@ -925,12 +1053,12 @@ static int garbage_collect(struct dedup_config *dc)
 }
 
 static int dm_dedup_message(struct dm_target *ti,
-			    unsigned argc, char **argv)
+			    unsigned int argc, char **argv)
 {
 	int r = 0;
 
 	struct dedup_config *dc = ti->private;
-        BUG_ON(!dc);
+	BUG_ON(!dc);
 
 	if (!strcasecmp(argv[0], "garbage_collect")) {
 		r = garbage_collect(dc);
@@ -941,8 +1069,28 @@ static int dm_dedup_message(struct dm_target *ti,
 			dc->mdops->flush_bufio_cache(dc->bmd);
 		else
 			r = -ENOTSUPP;
-	} else
+	} else if (!strcasecmp(argv[0], "corruption")) {
+                if (argc != 2) {
+                        DMINFO("Incomplete message: Usage corruption <0,1,2>:"
+				"0 - disable all corruption check flags, "
+				"1 - Enable corruption check, "
+				"2 - Enable FEC flag  (also enable corruption check if disabled)");
+                        r = -EINVAL;
+                } else if (!strcasecmp(argv[1], "1")) {
+                        dc->check_corruption = true;
+                        dc->fec = false;
+                } else if (!strcasecmp(argv[1], "2")) {
+                        dc->check_corruption = true;
+                        dc->fec = true;
+                } else if (!strcasecmp(argv[1], "0")) {
+                        dc->fec = false;
+                        dc->check_corruption = false;
+                } else {
+                        r = -EINVAL;
+                }
+	} else {
 		r = -EINVAL;
+	}
 
 	return r;
 }

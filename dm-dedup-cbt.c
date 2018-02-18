@@ -1,12 +1,15 @@
 /*
- * Copyright (C) 2012-2014 Vasily Tarasov
+ * Copyright (C) 2012-2017 Vasily Tarasov
  * Copyright (C) 2012-2014 Geoff Kuenning
  * Copyright (C) 2012-2014 Sonam Mandal
  * Copyright (C) 2012-2014 Karthikeyani Palanisami
  * Copyright (C) 2012-2014 Philip Shilane
  * Copyright (C) 2012-2014 Sagar Trehan
- * Copyright (C) 2012-2014 Erez Zadok
- *
+ * Copyright (C) 2012-2017 Erez Zadok
+ * Copyright (c) 2016-2017 Vinothkumar Raja
+ * Copyright (c) 2017-2017 Nidhi Panpalia
+ * Copyright (c) 2012-2017 Stony Brook University
+ * Copyright (c) 2012-2017 The Research Foundation for SUNY
  * This file is released under the GPL.
  */
 
@@ -27,7 +30,6 @@
 #define UINT32_MAX	(4294967295U)
 
 #define METADATA_BSIZE 4096
-#define METADATA_CACHESIZE 64  /* currently block manager ignores this value */
 #define METADATA_MAXLOCKS 5
 #define METADATA_SUPERBLOCK_LOCATION 0
 #define PRIVATE_DATA_SIZE 16 /* physical and logical block counter */
@@ -59,12 +61,8 @@ struct kvstore_cbt {
 	u64 root;
 };
 
-struct walk_info {
-	int (*fn)(void *key, int32_t ksize, void *value,
-		  s32 vsize, void *data);
-	struct dedup_config *dc;
-	s32 ksize;
-	s32 vsize;
+enum superblock_flags {
+	CLEAN_SHUTDOWN /* on disk flag to mark clean shutdown */
 };
 
 #define SPACE_MAP_ROOT_SIZE 128
@@ -73,7 +71,7 @@ struct metadata_superblock {
 	__le32 csum; /* Checksum of superblock except for this field. */
 	__le64 magic; /* Magic number to check against */
 	__le32 version; /* Metadata root version */
-	__le32 flags; /* General purpose flags. Not used. */
+	__le32 flags; /* General purpose flags */
 	__le64 blocknr;	/* This block number, dm_block_t. */
 	__u8 uuid[16]; /* UUID of device (Not used) */
 	/* Metadata space map */
@@ -113,7 +111,7 @@ static int __begin_transaction(struct metadata *md)
 	return r;
 }
 
-static int __commit_transaction(struct metadata *md)
+static int __commit_transaction(struct metadata *md, bool clean_shutdown_flag)
 {
 	int r = 0;
 	size_t metadata_len, data_len;
@@ -145,6 +143,12 @@ static int __commit_transaction(struct metadata *md)
 
 	disk_super = dm_block_data(sblock);
 
+	/* if destroy flag is set, set the bit 1 otherwise 0 */
+	if (clean_shutdown_flag)
+		disk_super->flags |= (1 << CLEAN_SHUTDOWN);
+	else
+		disk_super->flags &= ~(1 << CLEAN_SHUTDOWN);
+
 	if (md->kvs_linear)
 		disk_super->lbn_pbn_root = cpu_to_le64(md->kvs_linear->root);
 
@@ -153,6 +157,7 @@ static int __commit_transaction(struct metadata *md)
 
 	r = dm_sm_copy_root(md->meta_sm,
 			    &disk_super->metadata_space_map_root, metadata_len);
+
 	if (r < 0)
 		goto out_locked;
 
@@ -170,11 +175,12 @@ static int __commit_transaction(struct metadata *md)
 
 	r = dm_tm_commit(md->tm, sblock);
 
-out:
-	return r;
+	goto out;
 
 out_locked:
 	dm_bm_unlock(sblock);
+
+out:
 	return r;
 }
 
@@ -226,6 +232,9 @@ static int write_initial_superblock(struct metadata *md)
 
 	disk_super->blocknr = cpu_to_le64(dm_block_location(sblock));
 
+	/* set the clean shutdown flag to 0 */
+	disk_super->flags &= ~(1 << CLEAN_SHUTDOWN);
+	
 	return dm_tm_commit(md->tm, sblock);
 
 bad_locked:
@@ -271,36 +280,57 @@ static int verify_superblock(struct dm_block_manager *bm)
 	r = dm_bm_read_lock(bm, METADATA_SUPERBLOCK_LOCATION,
 			    NULL, &sblock);
 	if (r)
-		return r;
+		goto out;
 
 	disk_super = dm_block_data(sblock);
-
-	if (le64_to_cpu(disk_super->magic) != DM_DEDUP_MAGIC)
-		goto bad_sb;
-
-	if (disk_super->version != DM_DEDUP_VERSION)
-		goto bad_sb;
-
-	if (le32_to_cpu(disk_super->data_block_size) != METADATA_BSIZE)
-		goto bad_sb;
-
-	if (le32_to_cpu(disk_super->metadata_block_size) != METADATA_BSIZE)
-		goto bad_sb;
 
 	csum_le = cpu_to_le32(dm_bm_checksum(&disk_super->flags,
 					     sizeof(struct metadata_superblock)
 					     - sizeof(__le32),
 					     SUPERBLOCK_CSUM_XOR));
 
-	if (csum_le != disk_super->csum)
+	if (csum_le != disk_super->csum) {
+		DMERR("Superblock checksum verification failed");
 		goto bad_sb;
+	}
 
-	dm_bm_unlock(sblock);
-	return 0;
+	if (le64_to_cpu(disk_super->magic) != DM_DEDUP_MAGIC) {
+		DMERR("Magic number mismatch");
+		goto bad_sb;
+	}
+
+	if (disk_super->version != DM_DEDUP_VERSION) {
+		DMERR("Version number mismatch");
+		/*
+		 * XXX: handle version upgrade in future if possible
+		 */
+		goto bad_sb;
+	}
+
+	if (le32_to_cpu(disk_super->data_block_size) != METADATA_BSIZE) {
+		DMERR("Data block size mismatch");
+		goto bad_sb;
+	}
+
+	if (le32_to_cpu(disk_super->metadata_block_size) != METADATA_BSIZE) {
+		DMERR("Metadata block size mismatch");
+		goto bad_sb;
+	}
+	
+	/* if clean shutdown flag is not set return error */
+	if (!(disk_super->flags & (1 << CLEAN_SHUTDOWN)))
+		DMWARN("Possible data Inconsistency. Run dmdedup_corruption_check tool");
+
+	goto unlock_superblock;
 
 bad_sb:
+	r = -1;
+
+unlock_superblock:
 	dm_bm_unlock(sblock);
-	return -1;
+
+out:
+	return r;
 }
 
 static struct metadata *init_meta_cowbtree(void *input_param, bool *unformatted)
@@ -321,7 +351,6 @@ static struct metadata *init_meta_cowbtree(void *input_param, bool *unformatted)
 		return ERR_PTR(-ENOMEM);
 
 	meta_bm = dm_block_manager_create(p->metadata_bdev, METADATA_BSIZE,
-					  METADATA_CACHESIZE,
 					  METADATA_MAXLOCKS);
 	if (IS_ERR(meta_bm)) {
 		md = (struct metadata *)meta_bm;
@@ -343,7 +372,7 @@ static struct metadata *init_meta_cowbtree(void *input_param, bool *unformatted)
 		ret = verify_superblock(meta_bm);
 		if (ret < 0) {
 			DMERR("superblock verification failed");
-			/* XXX: handlr error */
+			/* XXX: handle error */
 		}
 
 		md->meta_bm = meta_bm;
@@ -433,7 +462,8 @@ static void exit_meta_cowbtree(struct metadata *md)
 {
 	int ret;
 
-	ret = __commit_transaction(md);
+	bool clean_shutdown_flag = true;
+	ret = __commit_transaction(md, clean_shutdown_flag);
 	if (ret < 0)
 		DMWARN("%s: __commit_transaction() failed, error = %d.",
 		       __func__, ret);
@@ -453,7 +483,8 @@ static int flush_meta_cowbtree(struct metadata *md)
 {
 	int r;
 
-	r = __commit_transaction(md);
+	bool clean_shutdown_flag = false;
+	r = __commit_transaction(md, clean_shutdown_flag);
 	if (r < 0)
 		return r;
 
@@ -508,7 +539,7 @@ static int kvs_delete_linear_cowbtree(struct kvstore *kvs,
 	if (ksize != kvs->ksize)
 		return -EINVAL;
 
-	r = dm_btree_remove(&kvcbt->info, kvcbt->root, key, &kvcbt->root);
+	r = dm_btree_remove(&(kvcbt->info), kvcbt->root, key, &(kvcbt->root));
 
 	if (r == -ENODATA)
 		return -ENODEV;
@@ -534,7 +565,7 @@ static int kvs_lookup_linear_cowbtree(struct kvstore *kvs, void *key,
 	if (ksize != kvs->ksize)
 		return -EINVAL;
 
-	r = dm_btree_lookup(&kvcbt->info, kvcbt->root, key, value);
+	r = dm_btree_lookup(&(kvcbt->info), kvcbt->root, key, value);
 
 	if (r == -ENODATA)
 		return 0;
@@ -560,8 +591,8 @@ static int kvs_insert_linear_cowbtree(struct kvstore *kvs, void *key,
 		return -EINVAL;
 
 	__dm_bless_for_disk(value);
-	return dm_btree_insert_notify(&kvcbt->info, kvcbt->root, key,
-				      value, &kvcbt->root, &inserted);
+	return dm_btree_insert_notify(&(kvcbt->info), kvcbt->root, key,
+				      value, &(kvcbt->root), &inserted);
 }
 
 static struct kvstore *kvs_create_linear_cowbtree(struct metadata *md,
@@ -607,7 +638,7 @@ static struct kvstore *kvs_create_linear_cowbtree(struct metadata *md,
 		md->kvs_linear = kvs;
 		__begin_transaction(md);
 	} else {
-		r = dm_btree_empty(&kvs->info, &kvs->root);
+		r = dm_btree_empty(&(kvs->info), &(kvs->root));
 		if (r < 0) {
 			kvs = ERR_PTR(r);
 			goto badtree;
@@ -624,7 +655,7 @@ static struct kvstore *kvs_create_linear_cowbtree(struct metadata *md,
 		md->kvs_linear = kvs;
 	}
 
-	return &kvs->ckvs;
+	return &(kvs->ckvs);
 
 badtree:
 	kfree(kvs);
@@ -656,14 +687,14 @@ static int kvs_delete_sparse_cowbtree(struct kvstore *kvs,
 
 repeat:
 
-	r = dm_btree_lookup(&kvcbt->info, kvcbt->root, &key_val, entry);
+	r = dm_btree_lookup(&(kvcbt->info), kvcbt->root, &key_val, entry);
 	if (r == -ENODATA) {
 		return -ENODEV;
 	} else if (r >= 0) {
 		if (!memcmp(entry, key, ksize)) {
-			r = dm_btree_remove(&kvcbt->info,
+			r = dm_btree_remove(&(kvcbt->info),
 					    kvcbt->root, &key_val,
-					    &kvcbt->root);
+					    &(kvcbt->root));
 			kfree(entry);
 			return r;
 		}
@@ -701,7 +732,7 @@ static int kvs_lookup_sparse_cowbtree(struct kvstore *kvs, void *key,
 
 repeat:
 
-	r = dm_btree_lookup(&kvcbt->info, kvcbt->root, &key_val, entry);
+	r = dm_btree_lookup(&(kvcbt->info), kvcbt->root, &key_val, entry);
 	if (r == -ENODATA) {
 		kfree(entry);
 		return 0;
@@ -744,13 +775,13 @@ static int kvs_insert_sparse_cowbtree(struct kvstore *kvs, void *key,
 
 repeat:
 
-	r = dm_btree_lookup(&kvcbt->info, kvcbt->root, &key_val, entry);
+	r = dm_btree_lookup(&(kvcbt->info), kvcbt->root, &key_val, entry);
 	if (r == -ENODATA) {
 		memcpy(entry, key, ksize);
 		memcpy(entry + ksize, value, vsize);
 		__dm_bless_for_disk(&key_val);
-		r = dm_btree_insert(&kvcbt->info, kvcbt->root, &key_val,
-				    entry, &kvcbt->root);
+		r = dm_btree_insert(&(kvcbt->info), kvcbt->root, &key_val,
+				    entry, &(kvcbt->root));
 		kfree(entry);
 		return r;
 	} else if (r >= 0) {
@@ -776,21 +807,29 @@ static int kvs_iterate_sparse_cowbtree(struct kvstore *kvs,
 	kvcbt = container_of(kvs, struct kvstore_cbt, ckvs);
 
 	entry = kmalloc(kvs->ksize + kvs->vsize, GFP_NOIO);
+	if (!entry)
+		goto out;
+
 	key = kmalloc(kvs->ksize, GFP_NOIO);
+	if (!key)
+		goto out;
+
 	value = kmalloc(kvs->vsize, GFP_NOIO);
+	if (!value)
+		goto out;
 
 	/* Get the lowest and highest keys in the key value store */
-	r = dm_btree_find_lowest_key(&kvcbt->info, kvcbt->root, &lowest);
+	r = dm_btree_find_lowest_key(&(kvcbt->info), kvcbt->root, &lowest);
 	if (r <= 0)
-		goto out_kvs_iterate;
+		goto out;
 
-	r = dm_btree_find_highest_key(&kvcbt->info, kvcbt->root, &highest);
+	r = dm_btree_find_highest_key(&(kvcbt->info), kvcbt->root, &highest);
 	if (r <= 0)
-		goto out_kvs_iterate;
+		goto out;
 
 	while (lowest <= highest) {
 		/* Get the next entry entry in the kvs store */
-		r = dm_btree_lookup_next(&kvcbt->info, kvcbt->root,
+		r = dm_btree_lookup_next(&(kvcbt->info), kvcbt->root,
 					 &lowest, &lowest, (void *)entry);
 
 		lowest++;
@@ -805,14 +844,14 @@ static int kvs_iterate_sparse_cowbtree(struct kvstore *kvs,
 		r = fn((void *)key, kvs->ksize, (void *)value,
 		       kvs->vsize, (void *)dc);
 		if (r)
-			goto out_kvs_iterate;
+			goto out;
 	}
 
-out_kvs_iterate:
-	kfree(entry);
-	kfree(key);
+out:
 	kfree(value);
-
+	kfree(key);
+	kfree(entry);
+	
 	return r;
 }
 
@@ -856,7 +895,7 @@ static struct kvstore *kvs_create_sparse_cowbtree(struct metadata *md,
 		md->kvs_sparse = kvs;
 		__begin_transaction(md);
 	} else {
-		r = dm_btree_empty(&kvs->info, &kvs->root);
+		r = dm_btree_empty(&(kvs->info), &(kvs->root));
 		if (r < 0) {
 			kvs = ERR_PTR(r);
 			goto badtree;
@@ -873,7 +912,7 @@ static struct kvstore *kvs_create_sparse_cowbtree(struct metadata *md,
 		md->kvs_sparse = kvs;
 	}
 
-	return &kvs->ckvs;
+	return &(kvs->ckvs);
 
 badtree:
 	kfree(kvs);
