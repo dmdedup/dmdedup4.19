@@ -138,7 +138,7 @@ unsigned int get_hash_digestsize(struct hash_desc_table *desc_table)
 }
 
 int compute_hash_bio(struct hash_desc_table *desc_table,
-				struct bio *bio, char *hash)
+		     struct bio *bio, char *hash)
 {
 	int ret = 0;
 	unsigned long slot;
