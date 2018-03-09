@@ -89,6 +89,7 @@ struct metadata_superblock {
 	__le32 flags; /* General purpose flags */
 	__le64 blocknr;	/* This block number, dm_block_t. */
 	__u8 uuid[16]; /* UUID of device (Not used) */
+	__u8 lpc_last; /* Stores current limit on linear probing */
 	/* Metadata space map */
 	__u8 metadata_space_map_root[SPACE_MAP_ROOT_SIZE];
 	__u8 data_space_map_root[SPACE_MAP_ROOT_SIZE]; /* Data space map */
@@ -116,8 +117,10 @@ static int __begin_transaction(struct metadata *md)
 	if (md->kvs_linear)
 		md->kvs_linear->root = le64_to_cpu(disk_super->lbn_pbn_root);
 
-	if (md->kvs_sparse)
+	if (md->kvs_sparse) {
 		md->kvs_sparse->root = le64_to_cpu(disk_super->hash_pbn_root);
+		md->kvs_sparse->lpc_cur = disk_super->lpc_last;
+	}
 
 	memcpy(md->private_data, disk_super->private_data, PRIVATE_DATA_SIZE);
 
@@ -167,8 +170,10 @@ static int __commit_transaction(struct metadata *md, bool clean_shutdown_flag)
 	if (md->kvs_linear)
 		disk_super->lbn_pbn_root = cpu_to_le64(md->kvs_linear->root);
 
-	if (md->kvs_sparse)
+	if (md->kvs_sparse) {
 		disk_super->hash_pbn_root = cpu_to_le64(md->kvs_sparse->root);
+		disk_super->lpc_last = md->kvs_sparse->lpc_cur;
+	}
 
 	r = dm_sm_copy_root(md->meta_sm,
 			    &disk_super->metadata_space_map_root, metadata_len);
