@@ -46,17 +46,22 @@ struct metadata {
 	/*
 	 * XXX: Currently we support only one linear and one sparse KVS.
 	 */
-	struct kvstore_cbt *kvs_linear;
-	struct kvstore_cbt *kvs_sparse;
+	struct kvstore_cbt_linear *kvs_linear;
+	struct kvstore_cbt_sparse *kvs_sparse;
 
 	u8 private_data[PRIVATE_DATA_SIZE];
 
 };
 
-struct kvstore_cbt {
+struct kvstore_cbt_linear {
 	struct kvstore ckvs;
-	u32 entry_size;	/* for sparse only */
+	struct dm_btree_info info;
+	u64 root;
+};
 
+struct kvstore_cbt_sparse {
+	struct kvstore ckvs;
+	u32 entry_size;
 	struct dm_btree_info info;
 	u64 root;
 };
@@ -234,7 +239,7 @@ static int write_initial_superblock(struct metadata *md)
 
 	/* set the clean shutdown flag to 0 */
 	disk_super->flags &= ~(1 << CLEAN_SHUTDOWN);
-	
+
 	return dm_tm_commit(md->tm, sblock);
 
 bad_locked:
@@ -316,7 +321,7 @@ static int verify_superblock(struct dm_block_manager *bm)
 		DMERR("Metadata block size mismatch");
 		goto bad_sb;
 	}
-	
+
 	/* if clean shutdown flag is not set return error */
 	if (!(disk_super->flags & (1 << CLEAN_SHUTDOWN)))
 		DMWARN("Possible data Inconsistency. Run dmdedup_corruption_check tool");
@@ -532,9 +537,9 @@ static int kvs_delete_linear_cowbtree(struct kvstore *kvs,
 				      void *key, int32_t ksize)
 {
 	int r;
-	struct kvstore_cbt *kvcbt = NULL;
+	struct kvstore_cbt_linear *kvcbt = NULL;
 
-	kvcbt = container_of(kvs, struct kvstore_cbt, ckvs);
+	kvcbt = container_of(kvs, struct kvstore_cbt_linear, ckvs);
 
 	if (ksize != kvs->ksize)
 		return -EINVAL;
@@ -558,9 +563,9 @@ static int kvs_lookup_linear_cowbtree(struct kvstore *kvs, void *key,
 				      s32 ksize, void *value, int32_t *vsize)
 {
 	int r;
-	struct kvstore_cbt *kvcbt = NULL;
+	struct kvstore_cbt_linear *kvcbt = NULL;
 
-	kvcbt = container_of(kvs, struct kvstore_cbt, ckvs);
+	kvcbt = container_of(kvs, struct kvstore_cbt_linear, ckvs);
 
 	if (ksize != kvs->ksize)
 		return -EINVAL;
@@ -580,9 +585,9 @@ static int kvs_insert_linear_cowbtree(struct kvstore *kvs, void *key,
 				      int32_t vsize)
 {
 	int inserted;
-	struct kvstore_cbt *kvcbt = NULL;
+	struct kvstore_cbt_linear *kvcbt = NULL;
 
-	kvcbt = container_of(kvs, struct kvstore_cbt, ckvs);
+	kvcbt = container_of(kvs, struct kvstore_cbt_linear, ckvs);
 
 	if (ksize != kvs->ksize)
 		return -EINVAL;
@@ -600,7 +605,7 @@ static struct kvstore *kvs_create_linear_cowbtree(struct metadata *md,
 						  u32 kmax,
 						  bool unformatted)
 {
-	struct kvstore_cbt *kvs;
+	struct kvstore_cbt_linear *kvs;
 	int r;
 
 	if (!vsize || !ksize)
@@ -672,9 +677,9 @@ static int kvs_delete_sparse_cowbtree(struct kvstore *kvs,
 	char *entry;
 	u64 key_val;
 	int r;
-	struct kvstore_cbt *kvcbt = NULL;
+	struct kvstore_cbt_sparse *kvcbt = NULL;
 
-	kvcbt = container_of(kvs, struct kvstore_cbt, ckvs);
+	kvcbt = container_of(kvs, struct kvstore_cbt_sparse, ckvs);
 
 	if (ksize != kvs->ksize)
 		return -EINVAL;
@@ -717,9 +722,9 @@ static int kvs_lookup_sparse_cowbtree(struct kvstore *kvs, void *key,
 	char *entry;
 	u64 key_val;
 	int r;
-	struct kvstore_cbt *kvcbt = NULL;
+	struct kvstore_cbt_sparse *kvcbt = NULL;
 
-	kvcbt = container_of(kvs, struct kvstore_cbt, ckvs);
+	kvcbt = container_of(kvs, struct kvstore_cbt_sparse, ckvs);
 
 	if (ksize != kvs->ksize)
 		return -EINVAL;
@@ -757,9 +762,9 @@ static int kvs_insert_sparse_cowbtree(struct kvstore *kvs, void *key,
 	char *entry;
 	u64 key_val;
 	int r;
-	struct kvstore_cbt *kvcbt = NULL;
+	struct kvstore_cbt_sparse *kvcbt = NULL;
 
-	kvcbt = container_of(kvs, struct kvstore_cbt, ckvs);
+	kvcbt = container_of(kvs, struct kvstore_cbt_sparse, ckvs);
 
 	if (ksize != kvs->ksize)
 		return -EINVAL;
@@ -799,12 +804,12 @@ static int kvs_iterate_sparse_cowbtree(struct kvstore *kvs,
 						 void *data),
 					void *dc)
 {
-	struct kvstore_cbt *kvcbt = NULL;
+	struct kvstore_cbt_sparse *kvcbt = NULL;
 	char *entry, *key, *value;
 	int r;
 	dm_block_t lowest, highest;
 
-	kvcbt = container_of(kvs, struct kvstore_cbt, ckvs);
+	kvcbt = container_of(kvs, struct kvstore_cbt_sparse, ckvs);
 
 	entry = kmalloc(kvs->ksize + kvs->vsize, GFP_NOIO);
 	if (!entry)
@@ -851,7 +856,7 @@ out:
 	kfree(value);
 	kfree(key);
 	kfree(entry);
-	
+
 	return r;
 }
 
@@ -860,7 +865,7 @@ static struct kvstore *kvs_create_sparse_cowbtree(struct metadata *md,
 						  u32 knummax,
 						  bool unformatted)
 {
-	struct kvstore_cbt *kvs;
+	struct kvstore_cbt_sparse *kvs;
 	int r;
 
 	if (!vsize || !ksize)
