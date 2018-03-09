@@ -777,7 +777,7 @@ static int kvs_insert_sparse_cowbtree(struct kvstore *kvs, void *key,
 {
 	char *entry;
 	u64 key_val;
-	int r;
+	int i, r;
 	struct kvstore_cbt_sparse *kvcbt = NULL;
 
 	kvcbt = container_of(kvs, struct kvstore_cbt_sparse, ckvs);
@@ -794,24 +794,39 @@ static int kvs_insert_sparse_cowbtree(struct kvstore *kvs, void *key,
 
 	key_val = (*(uint64_t *)key);
 
-repeat:
-
-	r = dm_btree_lookup(&(kvcbt->info), kvcbt->root, &key_val, entry);
-	if (r == -ENODATA) {
-		memcpy(entry, key, ksize);
-		memcpy(entry + ksize, value, vsize);
-		__dm_bless_for_disk(&key_val);
-		r = dm_btree_insert(&(kvcbt->info), kvcbt->root, &key_val,
-				    entry, &(kvcbt->root));
-		kfree(entry);
-		return r;
-	} else if (r >= 0) {
-		key_val++;
-		goto repeat;
-	} else {
-		kfree(entry);
-		return r;
+	for (i = 0; i <= kvcbt->lpmax; i++) {
+		r = dm_btree_lookup(&(kvcbt->info), kvcbt->root, &key_val,
+		entry);
+		if (r == -ENODATA) {
+			memcpy(entry, key, ksize);
+			memcpy(entry + ksize, value, vsize);
+			__dm_bless_for_disk(&key_val);
+			r = dm_btree_insert(&(kvcbt->info), kvcbt->root,
+			&key_val, entry, &(kvcbt->root));
+			kfree(entry);
+			if (i > kvcbt->curr_lpmax) {
+				/*
+				 * TODO: Need to put locks around it since
+				 * multiple threads might  read/write this
+				 * variable.
+				 */
+				DMINFO("Changing linear probing to %d", i);
+				kvcbt->curr_lpmax = i;
+			}
+			return r;
+		} else if (r >= 0) {
+			key_val++;
+		} else {
+			kfree(entry);
+			return r;
+		}
 	}
+	DMWARN("Linear probing hard limit hit for insert.");
+	DMINFO("Changing linear probing to hard limit :%d", kvcbt->lpmax);
+	kvcbt->curr_lpmax = kvcbt->lpmax; //TODO:Check if locks required
+	kfree(entry);
+	return -ENOSPC;
+
 }
 
 static int kvs_iterate_sparse_cowbtree(struct kvstore *kvs,
