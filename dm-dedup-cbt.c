@@ -727,7 +727,8 @@ repeat:
 }
 
 /*
- * 0 - not found
+ * 0 - not found or even after hitting limit for max linear
+ * probing but we could not find an entry.
  * 1 - found
  * < 0 - error on lookup
  */
@@ -736,7 +737,7 @@ static int kvs_lookup_sparse_cowbtree(struct kvstore *kvs, void *key,
 {
 	char *entry;
 	u64 key_val;
-	int r;
+	int i, r;
 	struct kvstore_cbt_sparse *kvcbt = NULL;
 
 	kvcbt = container_of(kvs, struct kvstore_cbt_sparse, ckvs);
@@ -749,25 +750,38 @@ static int kvs_lookup_sparse_cowbtree(struct kvstore *kvs, void *key,
 		return -ENOMEM;
 
 	key_val = (*(uint64_t *)key);
-
-repeat:
-
-	r = dm_btree_lookup(&(kvcbt->info), kvcbt->root, &key_val, entry);
-	if (r == -ENODATA) {
-		kfree(entry);
-		return 0;
-	} else if (r >= 0) {
-		if (!memcmp(entry, key, ksize)) {
-			memcpy(value, entry + ksize, kvs->vsize);
+	/*
+	 * In case of linear probing we need to iterate only till current set
+	 * lpc_max.
+	 */
+	/*
+	 * XXX:Need to put lock around whole code since multiple threads
+	 * might be accessing this limit.
+	 */
+	for (i = 0; i <= kvcbt->lpc_cur; i++) {
+		r = dm_btree_lookup(&(kvcbt->info), kvcbt->root, &key_val,
+		entry);
+		//if entry not found in btree
+		if (r == -ENODATA) {
 			kfree(entry);
-			return 1;
+			return 0;
+		} else if (r >= 0) {
+			//If entry is found but only first 8 bytes are matched.
+			if (!memcmp(entry, key, ksize)) {
+				memcpy(value, entry + ksize, kvs->vsize);
+				kfree(entry);
+				return 1;
+			}
+			DMWARN("kvs_lookup_sparse_cowbtree: hash collision for"
+			"key :%llu %s", key_val, entry);
+			key_val++;
+		} else { //Error in finding an entry.
+			kfree(entry);
+			return r;
 		}
-		key_val++;
-		goto repeat;
-	} else {
-		kfree(entry);
-		return r;
 	}
+	kfree(entry);
+	return 0;
 }
 
 static int kvs_insert_sparse_cowbtree(struct kvstore *kvs, void *key,
