@@ -66,6 +66,15 @@ struct kvstore_cbt_sparse {
 
 	struct dm_btree_info info;
 	u64 root;
+
+    /* We will put max limit for linear probing. We are maintaining two
+     * values for that. First one indicates current max value for linear
+     * probing and second is hard limit until which linear probing is
+     * allowed.
+     */
+	u32 curr_lpmax;
+	u32 lpmax;
+
 };
 
 enum superblock_flags {
@@ -892,6 +901,8 @@ static struct kvstore *kvs_create_sparse_cowbtree(struct metadata *md,
 	kvs->info.value_type.inc = NULL;
 	kvs->info.value_type.dec = NULL;
 	kvs->info.value_type.equal = NULL;
+	kvs->lpmax = MAX_LINEAR_PROBING_LIMIT;
+	kvs->curr_lpmax = MAX_LINEAR_PROBING_INITIALIZER;
 
 	if (!unformatted) {
 		kvs->ckvs.kvs_insert = kvs_insert_sparse_cowbtree;
