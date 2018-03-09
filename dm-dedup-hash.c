@@ -17,7 +17,6 @@
 #include "dm-dedup-hash.h"
 #include <linux/atomic.h>
 #include <linux/blk_types.h>
-
 /*
  * We are declaring and initalizaing global hash_desc, because
  * we need to do hash computation in endio function, and this
@@ -145,6 +144,9 @@ int compute_hash_bio(struct hash_desc_table *desc_table,
 	struct bio_vec bvec;
 	struct bvec_iter iter;
        struct shash_desc *desc;
+#ifdef __INJECT_ERROR__
+	bool error_inject = false;
+#endif
 
 	slot = get_next_slot(desc_table);
 	desc = slot_to_desc(desc_table, slot);
@@ -153,12 +155,29 @@ int compute_hash_bio(struct hash_desc_table *desc_table,
 	if (ret)
 		goto out;
 	__bio_for_each_segment(bvec, bio, iter, bio->bi_iter) {
-               crypto_shash_update(desc,
-                                   page_address(bvec.bv_page)+bvec.bv_offset,
-                                   bvec.bv_len);
-	}
+#ifdef __INJECT_ERROR__
+		/*
+		 *  In error injection mode if buffer starts
+		 *  with some special string then overwrite hash
+		 *  first 8 bytes by predefined value.
+		 */
+		if (memcmp(page_address(bvec.bv_page)+bvec.bv_offset,
+			"dmdedup", 7) == 0) {
+			error_inject = true;
+		}
+#endif
 
+	   crypto_shash_update(desc,
+	   page_address(bvec.bv_page)+bvec.bv_offset,
+	   bvec.bv_len);
+	}
        crypto_shash_final(desc, hash);
+
+#ifdef __INJECT_ERROR__
+	if (error_inject)
+		memcpy(hash, "xxxxxxxx", 8);
+#endif
+
 out:
 	put_slot(desc_table, slot);
 	return ret;
