@@ -881,6 +881,15 @@ static int kvs_iterate_sparse_cowbtree(struct kvstore *kvs,
 	char *entry, *key, *value;
 	int r;
 	dm_block_t lowest, highest;
+	/*
+	 * For unit testing, we use dconfig to iterate over the
+	 * hash-pbn entries, and count is used to mark the second
+	 * and forth probed entry as a deleted entry (tombstone).
+	 */
+#ifdef __INJECT_ERROR__
+	struct dedup_config *dconfig;
+	int count = 0;
+#endif
 
 	kvcbt = container_of(kvs, struct kvstore_cbt_sparse, ckvs);
 
@@ -917,12 +926,28 @@ static int kvs_iterate_sparse_cowbtree(struct kvstore *kvs,
 		/* Split the key and value separately */
 		memcpy(key, entry, kvs->ksize);
 		memcpy(value, (void *)(entry + kvs->ksize), kvs->vsize);
-
+/*
+ * For unit testing, we mark the middle (second and forth) probed
+ * entries as deleted.
+ */
+#ifdef __INJECT_ERROR__
+		if (memcmp(key, "xxxxxxxx", 8) == 0) {
+			DMWARN("iterate key: %s", key);
+			count++;
+			if (count == 2 || count == 4) {
+				dconfig = (struct dedup_config *)dc;
+				dconfig->kvs_hash_pbn->kvs_delete(
+						dconfig->kvs_hash_pbn,
+						(void *)key, kvs->ksize);
+			}
+		}
+#else
 		/* Call the cleanup callback function */
 		r = fn((void *)key, kvs->ksize, (void *)value,
 		       kvs->vsize, (void *)dc);
 		if (r)
 			goto out;
+#endif
 	}
 
 out:
