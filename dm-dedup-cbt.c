@@ -800,7 +800,7 @@ static int kvs_lookup_sparse_cowbtree(struct kvstore *kvs, void *key,
 				kfree(entry);
 				return 1;
 			}
-			DMWARN("kvs_lookup_sparse_cowbtree: hash collision for"
+			DMWARN("kvs_lookup_sparse_cowbtree: hash collision for "
 			"key :%llu %s", key_val, entry);
 			key_val++;
 		} else {
@@ -857,6 +857,7 @@ static int kvs_insert_sparse_cowbtree(struct kvstore *kvs, void *key,
 			}
 			return r;
 		} else if (r >= 0) {
+			DMINFO("Collision detected for key: %s",(char *)key);
 			key_val++;
 		} else {
 			kfree(entry);
@@ -939,6 +940,7 @@ static int kvs_iterate_sparse_cowbtree(struct kvstore *kvs,
 				dconfig->kvs_hash_pbn->kvs_delete(
 						dconfig->kvs_hash_pbn,
 						(void *)key, kvs->ksize);
+				DMINFO("Deleted key: %s", key);
 			}
 		}
 #else
