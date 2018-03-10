@@ -694,6 +694,7 @@ static int kvs_delete_sparse_cowbtree(struct kvstore *kvs,
 	u64 key_val;
 	int r;
 	struct kvstore_cbt_sparse *kvcbt = NULL;
+	int lp_count = 0;
 
 	kvcbt = container_of(kvs, struct kvstore_cbt_sparse, ckvs);
 
@@ -713,13 +714,30 @@ repeat:
 		return -ENODEV;
 	} else if (r >= 0) {
 		if (!memcmp(entry, key, ksize)) {
-			r = dm_btree_remove(&(kvcbt->info),
+
+			if (lp_count == 0) {
+				r = dm_btree_remove(&(kvcbt->info),
 					    kvcbt->root, &key_val,
 					    &(kvcbt->root));
+			} else {
+				/*
+				 * For linearly probed entries, instead of
+				 * removing the entry from the btree, we
+				 * mark the entry as deleted to avoid holes
+				 * in linear probing.
+				 */
+
+				memset(entry, DELETED_ENTRY, kvcbt->entry_size);
+				__dm_bless_for_disk(&key_val);
+				r = dm_btree_insert(&(kvcbt->info),
+						kvcbt->root, &key_val,
+						entry, &(kvcbt->root));
+			}
 			kfree(entry);
 			return r;
 		}
 		key_val++;
+		lp_count++;
 		goto repeat;
 	} else {
 		kfree(entry);
