@@ -545,6 +545,21 @@ static int get_refcount_cowbtree(struct metadata *md, uint64_t blockn)
 	return (int)refcount;
 }
 
+/*
+ * This function checks if an entry is marked as deleted
+ * (tombstone) or not.  We check if every byte in the
+ * entry holds the value of DELETED_ENTRY.
+ */
+bool is_deleted_entry(const char *ptr, uint32_t length)
+{
+	int i = 0;
+
+	while ((i < length) && (ptr[i] == DELETED_ENTRY))
+		i++;
+
+	return i == length;
+}
+
 /*********************************************************
  *		Linear KVS Functions			 *
  *********************************************************/
@@ -823,7 +838,8 @@ static int kvs_insert_sparse_cowbtree(struct kvstore *kvs, void *key,
 	for (i = 0; i <= kvcbt->lpmax; i++) {
 		r = dm_btree_lookup(&(kvcbt->info), kvcbt->root, &key_val,
 		entry);
-		if (r == -ENODATA) {
+		if (r == -ENODATA ||
+			is_deleted_entry(entry, kvcbt->entry_size)) {
 			memcpy(entry, key, ksize);
 			memcpy(entry + ksize, value, vsize);
 			__dm_bless_for_disk(&key_val);
