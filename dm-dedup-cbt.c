@@ -921,7 +921,10 @@ static int kvs_iterate_sparse_cowbtree(struct kvstore *kvs,
 					 &lowest, &lowest, (void *)entry);
 
 		lowest++;
-		if (r)
+		/*
+		 * Do not iterate over entries that are marked as deleted
+		 */
+		if (r || is_deleted_entry(entry, kvs->ksize + kvs->vsize))
 			continue;
 
 		/* Split the key and value separately */
