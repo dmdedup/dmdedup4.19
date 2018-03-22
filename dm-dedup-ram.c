@@ -19,7 +19,7 @@
 #include "dm-dedup-backend.h"
 
 #define EMPTY_ENTRY -5
-#define DELETED_ENTRY -6
+#define DELETED_ENTRY 0x6B
 
 #define UINT32_MAX	(4294967295U)
 #define HASHTABLE_OVERPROV	(10)
