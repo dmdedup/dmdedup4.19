@@ -17,7 +17,6 @@
 #include "dm-dedup-hash.h"
 #include <linux/atomic.h>
 #include <linux/blk_types.h>
-
 /*
  * We are declaring and initalizaing global hash_desc, because
  * we need to do hash computation in endio function, and this
