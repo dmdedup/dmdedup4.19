@@ -76,23 +76,6 @@ struct kvstore_cbt_sparse {
 
 };
 
-struct kvstore_cbt_sparse {
-	struct kvstore ckvs;
-	u32 entry_size;
-
-	struct dm_btree_info info;
-	u64 root;
-
-    /* We will put max limit for linear probing. We are maintaining two
-     * values for that. First one indicates current max value for linear
-     * probing and second is hard limit until which linear probing is
-     * allowed.
-     */
-	u32 curr_lpmax;
-	u32 lpmax;
-
-};
-
 enum superblock_flags {
 	CLEAN_SHUTDOWN /* on disk flag to mark clean shutdown */
 };
