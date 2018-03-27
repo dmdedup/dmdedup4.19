@@ -318,8 +318,7 @@ static int kvs_iterate_linear_inram(struct kvstore *kvs,
 					       (void *)ptr, kvs->vsize, data);
 			if (ret < 0)
 				goto out;
-		}
-		else {
+		} else {
 			ret = 1;
 		}
 	}
