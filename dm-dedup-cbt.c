@@ -570,14 +570,14 @@ static int kvs_delete_linear_cowbtree(struct kvstore *kvs,
 }
 
 /*
- * 0 - not found
- * 1 - found
- * < 0 - error on lookup
+ * 0 - on success
+ * -ENODATA - if entry not found
+ * <0 - error on lookup
  */
 static int kvs_lookup_linear_cowbtree(struct kvstore *kvs, void *key,
 				      s32 ksize, void *value, int32_t *vsize)
 {
-	int r;
+	int r=-ENODATA;
 	struct kvstore_cbt_linear *kvcbt = NULL;
 
 	kvcbt = container_of(kvs, struct kvstore_cbt_linear, ckvs);
@@ -587,12 +587,7 @@ static int kvs_lookup_linear_cowbtree(struct kvstore *kvs, void *key,
 
 	r = dm_btree_lookup(&(kvcbt->info), kvcbt->root, key, value);
 
-	if (r == -ENODATA)
-		return 0;
-	else if (r >= 0)
-		return 1;
-	else
-		return r;
+	return r;
 }
 
 static int kvs_insert_linear_cowbtree(struct kvstore *kvs, void *key,
@@ -737,7 +732,7 @@ static int kvs_lookup_sparse_cowbtree(struct kvstore *kvs, void *key,
 {
 	char *entry;
 	u64 key_val;
-	int i, r;
+	int i, r= -ENODATA;
 	struct kvstore_cbt_sparse *kvcbt = NULL;
 
 	kvcbt = container_of(kvs, struct kvstore_cbt_sparse, ckvs);
@@ -764,13 +759,13 @@ static int kvs_lookup_sparse_cowbtree(struct kvstore *kvs, void *key,
 		//if entry not found in btree
 		if (r == -ENODATA) {
 			kfree(entry);
-			return 0;
-		} else if (r >= 0) {
+			return r;
+		} else if (r == 0) {
 			//If entry is found but only first 8 bytes are matched.
 			if (!memcmp(entry, key, ksize)) {
 				memcpy(value, entry + ksize, kvs->vsize);
 				kfree(entry);
-				return 1;
+				return 0;
 			}
 			DMWARN("kvs_lookup_sparse_cowbtree: hash collision for"
 			"key :%llu %s", key_val, entry);
@@ -781,7 +776,7 @@ static int kvs_lookup_sparse_cowbtree(struct kvstore *kvs, void *key,
 		}
 	}
 	kfree(entry);
-	return 0;
+	return r;
 }
 
 static int kvs_insert_sparse_cowbtree(struct kvstore *kvs, void *key,
