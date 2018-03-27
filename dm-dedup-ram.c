@@ -175,7 +175,7 @@ static int get_refcount_inram(struct metadata *md, uint64_t blockn)
  *		General KVS Functions			*
  ********************************************************/
 
-static int is_empty(char *ptr, int length)
+static bool is_empty(char *ptr, int length)
 {
 	int i = 0;
 
@@ -185,7 +185,7 @@ static int is_empty(char *ptr, int length)
 	return i == length;
 }
 
-static int is_deleted(char *ptr, int length)
+static bool is_deleted(char *ptr, int length)
 {
 	int i = 0;
 
@@ -303,19 +303,24 @@ static int kvs_iterate_linear_inram(struct kvstore *kvs,
 	u64 i = 0;
 	char *ptr = NULL;
 	struct kvstore_inram *kvinram = NULL;
+	bool ret_empty;
 
 	kvinram = container_of(kvs, struct kvstore_inram, ckvs);
 
 	for (i = 0; i < kvinram->kmax; i++) {
 		ptr = kvinram->store + (i * kvs->vsize);
 
-		ret = is_empty(ptr, kvs->vsize);
+		ret_empty = is_empty(ptr, kvs->vsize);
 
-		if (!ret) {
+		if (!ret_empty) {
+			ret = 0;
 			ret = iteration_action((void *)&i, kvs->ksize,
 					       (void *)ptr, kvs->vsize, data);
 			if (ret < 0)
 				goto out;
+		}
+		else {
+			ret = 1;
 		}
 	}
 
