@@ -578,7 +578,7 @@ static int get_refcount_cowbtree(struct metadata *md, uint64_t blockn)
  *		Linear KVS Functions			 *
  *********************************************************/
 /*
- * It deleted key from btree.
+ * It deletes key from btree.
  *
  * Returns -ERR code in failure.
  * Returns 0 on success.
@@ -820,6 +820,13 @@ static int kvs_lookup_sparse_cowbtree(struct kvstore *kvs, void *key,
 	return r;
 }
 
+/*
+ * It tries to insert key into cow btree. In case of collision linear
+ * probing is done until it hits max limit.
+ *
+ * Returns -ERR code on failure.
+ * Returns 0 on success.
+ */
 static int kvs_insert_sparse_cowbtree(struct kvstore *kvs, void *key,
 				      s32 ksize, void *value,
 				      int32_t vsize)
@@ -862,7 +869,7 @@ static int kvs_insert_sparse_cowbtree(struct kvstore *kvs, void *key,
 				DMINFO("Changing linear probing to %d", i);
 				kvcbt->lpc_cur = i;
 			}
-			return r;
+			return 0;
 		} else if (r >= 0) {
 			key_val++;
 		} else {
