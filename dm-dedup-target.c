@@ -52,6 +52,7 @@ enum backend {
 	BKND_COWBTREE
 };
 
+/* Initializes bio. */
 static void bio_zero_endio(struct bio *bio)
 {
 	zero_fill_bio(bio);
@@ -59,6 +60,7 @@ static void bio_zero_endio(struct bio *bio)
 	bio_endio(bio);
 }
 
+/* Returns the logical block number for the bio. */
 static uint64_t bio_lbn(struct dedup_config *dc, struct bio *bio)
 {
 	sector_t lbn = bio->bi_iter.bi_sector;
@@ -68,12 +70,17 @@ static uint64_t bio_lbn(struct dedup_config *dc, struct bio *bio)
 	return lbn;
 }
 
+/* Entry point to the generic block layer. */
 static void do_io_remap_device(struct dedup_config *dc, struct bio *bio)
 {
 	bio->bi_bdev = dc->data_dev->bdev;
 	generic_make_request(bio);
 }
 
+/*
+ * Updates the sector indice, given the pbn and offset calculation, and
+ * enters the generic block layer.
+ */
 static void do_io(struct dedup_config *dc, struct bio *bio, uint64_t pbn)
 {
 	int offset;
@@ -84,6 +91,14 @@ static void do_io(struct dedup_config *dc, struct bio *bio, uint64_t pbn)
 	do_io_remap_device(dc, bio);
 }
 
+/*
+ * Gets the pbn from the LBN->PBN entry and performs io request.
+ * If corruption check is enabled, it prepares the check_io
+ * structure for FEC and then performs io request.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
 static int handle_read(struct dedup_config *dc, struct bio *bio)
 {
 	u64 lbn;
@@ -95,18 +110,18 @@ static int handle_read(struct dedup_config *dc, struct bio *bio)
 
 	lbn = bio_lbn(dc, bio);
 
-	
+
 	/* get the pbn in LBN->PBN store for incoming lbn */
 	r = dc->kvs_lbn_pbn->kvs_lookup(dc->kvs_lbn_pbn, (void *)&lbn,
 			sizeof(lbn), (void *)&lbnpbn_value, &vsize);
 
-	if (r == 0) { 
+	if (r == 0) {
 		/* unable to find the entry in LBN->PBN store */
-		
+
 		bio_zero_endio(bio);
-	} else if (r == 1) { 
+	} else if (r == 1) {
 		/* entry found in the LBN->PBN store */
-		
+
 		/* if corruption check not enabled directly do io request */
 		if (!dc->check_corruption) {
 			clone = bio;
@@ -120,10 +135,10 @@ static int handle_read(struct dedup_config *dc, struct bio *bio)
 		io->lbn = lbn;
 		io->base_bio = bio;
 
-		/* 
+		/*
  		 * Prepare bio clone to handle disk read
- 		 * clone is created so that we can have our own endio 
- 		 * where we call bio_endio on original bio 
+ 		 * clone is created so that we can have our own endio
+ 		 * where we call bio_endio on original bio
  		 * after corruption checks are done
  		 */
 		clone = bio_clone_fast(bio, GFP_NOIO, dc->bs);
@@ -132,7 +147,7 @@ static int handle_read(struct dedup_config *dc, struct bio *bio)
 			goto out_clone_fail;
 		}
 
-		/* 
+		/*
  		 * Store the check_io structure in bio's private field
  		 * used as indirect argument when disk read is finished
  		 */
@@ -156,6 +171,13 @@ out:
 
 }
 
+/*
+ * Allocates pbn_new and increments the logical and physical block
+ * counters.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
 static int allocate_block(struct dedup_config *dc, uint64_t *pbn_new)
 {
 	int r;
@@ -170,6 +192,13 @@ static int allocate_block(struct dedup_config *dc, uint64_t *pbn_new)
 	return r;
 }
 
+/*
+ * Allocates pbn_new and performs write io.
+ * Inserts the new LBN->PBN entry.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
 static int write_to_new_block(struct dedup_config *dc, uint64_t *pbn_new,
 			      struct bio *bio, uint64_t lbn)
 {
@@ -193,6 +222,12 @@ static int write_to_new_block(struct dedup_config *dc, uint64_t *pbn_new,
 	return r;
 }
 
+/*
+ * Handles write io when Hash->PBN entry is not found.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
 static int handle_write_no_hash(struct dedup_config *dc,
 				struct bio *bio, uint64_t lbn, u8 *hash)
 {
@@ -290,6 +325,12 @@ out_2:
 	return r;
 }
 
+/*
+ * Handles write io when Hash->PBN entry is found.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
 static int handle_write_with_hash(struct dedup_config *dc, struct bio *bio,
 				  u64 lbn, u8 *final_hash,
 				  struct hash_pbn_value hashpbn_value)
@@ -383,6 +424,14 @@ out_2:
 	return r;
 }
 
+/*
+ * Performs a lookup for Hash->PBN entry.
+ * If entry is not found, it invokes handle_write_no_hash.
+ * If entry is found, it invokes handle_write_with_hash.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
 static int handle_write(struct dedup_config *dc, struct bio *bio)
 {
 	u64 lbn;
@@ -437,6 +486,10 @@ static int handle_write(struct dedup_config *dc, struct bio *bio)
 	return 0;
 }
 
+/*
+ * Processes block io requests and propagates negative error
+ * code to block io status (BLK_STS_*).
+ */
 static void process_bio(struct dedup_config *dc, struct bio *bio)
 {
 	int r;
@@ -480,6 +533,10 @@ static void process_bio(struct dedup_config *dc, struct bio *bio)
 	}
 }
 
+/*
+ * Main function for all work pool threads that process the block io
+ * operation.
+ */
 static void do_work(struct work_struct *ws)
 {
 	struct dedup_work *data = container_of(ws, struct dedup_work, worker);
@@ -491,6 +548,10 @@ static void do_work(struct work_struct *ws)
 	process_bio(dc, bio);
 }
 
+/*
+ * Defers block io operations by enqueuing them in the work pool
+ * queue.
+ */
 static void dedup_defer_bio(struct dedup_config *dc, struct bio *bio)
 {
 	struct dedup_work *data;
@@ -510,6 +571,11 @@ static void dedup_defer_bio(struct dedup_config *dc, struct bio *bio)
 	queue_work(dc->workqueue, &(data->worker));
 }
 
+/*
+ * Wrapper function for dedup_defer_bio.
+ *
+ * Returns DM_MAPIO_SUBMITTED.
+ */
 static int dm_dedup_map(struct dm_target *ti, struct bio *bio)
 {
 	dedup_defer_bio(ti->private, bio);
@@ -533,10 +599,16 @@ struct dedup_args {
 	char backend_str[MAX_BACKEND_NAME_LEN];
 
 	u32 flushrq;
-	
+
 	bool corruption_flag;
 };
 
+/*
+ * Parses metadata device.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
 static int parse_meta_dev(struct dedup_args *da, struct dm_arg_set *as,
 			  char **err)
 {
@@ -550,6 +622,12 @@ static int parse_meta_dev(struct dedup_args *da, struct dm_arg_set *as,
 	return r;
 }
 
+/*
+ * Parses data device.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
 static int parse_data_dev(struct dedup_args *da, struct dm_arg_set *as,
 			  char **err)
 {
@@ -565,6 +643,12 @@ static int parse_data_dev(struct dedup_args *da, struct dm_arg_set *as,
 	return r;
 }
 
+/*
+ * Parses block size.
+ *
+ * Returns -EINVAL in failure.
+ * Returns 0 on success.
+ */
 static int parse_block_size(struct dedup_args *da, struct dm_arg_set *as,
 			    char **err)
 {
@@ -589,6 +673,12 @@ static int parse_block_size(struct dedup_args *da, struct dm_arg_set *as,
 	return 0;
 }
 
+/*
+ * Checks for a recognized hash algorithm.
+ *
+ * Returns -EINVAL in failure.
+ * Returns 0 on success.
+ */
 static int parse_hash_algo(struct dedup_args *da, struct dm_arg_set *as,
 			   char **err)
 {
@@ -602,6 +692,12 @@ static int parse_hash_algo(struct dedup_args *da, struct dm_arg_set *as,
 	return 0;
 }
 
+/*
+ * Checks for a supported metadata backend.
+ *
+ * Returns -EINVAL in failure.
+ * Returns 0 on success.
+ */
 static int parse_backend(struct dedup_args *da, struct dm_arg_set *as,
 			 char **err)
 {
@@ -623,6 +719,12 @@ static int parse_backend(struct dedup_args *da, struct dm_arg_set *as,
 	return 0;
 }
 
+/*
+ * Checks for a valid flushrq value.
+ *
+ * Returns -EINVAL in failure.
+ * Returns 0 on success.
+ */
 static int parse_flushrq(struct dedup_args *da, struct dm_arg_set *as,
 			 char **err)
 {
@@ -634,6 +736,12 @@ static int parse_flushrq(struct dedup_args *da, struct dm_arg_set *as,
 	return 0;
 }
 
+/*
+ * Checks for a valid corruption flag value.
+ *
+ * Returns -EINVAL in failure.
+ * Returns 0 on success.
+ */
 static int parse_corruption_flag(struct dedup_args *da, struct dm_arg_set *as,
 			 char **err)
 {
@@ -649,6 +757,13 @@ static int parse_corruption_flag(struct dedup_args *da, struct dm_arg_set *as,
         return 0;
 
 }
+
+/*
+ * Wrapper function for all parse functions.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
 static int parse_dedup_args(struct dedup_args *da, int argc,
 			    char **argv, char **err)
 {
@@ -691,7 +806,7 @@ static int parse_dedup_args(struct dedup_args *da, int argc,
 	r = parse_flushrq(da, &as, err);
 	if (r)
 		return r;
-	
+
 	r = parse_corruption_flag(da, &as, err);
 	if (r)
 		return r;
@@ -699,6 +814,10 @@ static int parse_dedup_args(struct dedup_args *da, int argc,
 	return 0;
 }
 
+/*
+ * Decrements metadata and data device's use count
+ * and removes them if necessary.
+ */
 static void destroy_dedup_args(struct dedup_args *da)
 {
 	if (da->meta_dev)
@@ -708,6 +827,12 @@ static void destroy_dedup_args(struct dedup_args *da)
 		dm_put_device(da->ti, da->data_dev);
 }
 
+/*
+ * Dmdedup constructor.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
 static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 {
 	struct dedup_args da;
@@ -927,6 +1052,8 @@ out:
 	return r;
 }
 
+
+/* Dmdedup destructor. */
 static void dm_dedup_dtr(struct dm_target *ti)
 {
 	struct dedup_config *dc = ti->private;
@@ -963,6 +1090,7 @@ static void dm_dedup_dtr(struct dm_target *ti)
 	kfree(dc);
 }
 
+/* Gives Dmdedup status. */
 static void dm_dedup_status(struct dm_target *ti, status_type_t status_type,
 			    unsigned int status_flags, char *result, unsigned int maxlen)
 {
@@ -1004,6 +1132,12 @@ static void dm_dedup_status(struct dm_target *ti, status_type_t status_type,
 	}
 }
 
+/*
+ * Cleans up Hash->PBN entry.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
 static int cleanup_hash_pbn(void *key, int32_t ksize, void *value,
 			    s32 vsize, void *data)
 {
@@ -1039,6 +1173,14 @@ out:
 	return r;
 }
 
+/*
+ * Performs garbage collection.
+ * Iterates over all Hash->PBN entries and cleans up
+ * hashes if the refcount of block is 1.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
 static int garbage_collect(struct dedup_config *dc)
 {
 	int err = 0;
@@ -1052,6 +1194,14 @@ static int garbage_collect(struct dedup_config *dc)
 	return err;
 }
 
+/*
+ * Gives Debug messages for garbage collection.
+ * Also, enables and disables corruption check and
+ * FEC flags.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
 static int dm_dedup_message(struct dm_target *ti,
 			    unsigned int argc, char **argv)
 {
