@@ -95,18 +95,16 @@ static int handle_read(struct dedup_config *dc, struct bio *bio)
 
 	lbn = bio_lbn(dc, bio);
 
-	
 	/* get the pbn in LBN->PBN store for incoming lbn */
 	r = dc->kvs_lbn_pbn->kvs_lookup(dc->kvs_lbn_pbn, (void *)&lbn,
 			sizeof(lbn), (void *)&lbnpbn_value, &vsize);
 
-	if (r == -ENODATA) { 
+	if (r == -ENODATA) {
 		/* unable to find the entry in LBN->PBN store */
-		
 		bio_zero_endio(bio);
-	} else if (r == 0) { 
+	} else if (r == 0) {
 		/* entry found in the LBN->PBN store */
-		
+
 		/* if corruption check not enabled directly do io request */
 		if (!dc->check_corruption) {
 			clone = bio;
@@ -120,22 +118,22 @@ static int handle_read(struct dedup_config *dc, struct bio *bio)
 		io->lbn = lbn;
 		io->base_bio = bio;
 
-		/* 
- 		 * Prepare bio clone to handle disk read
- 		 * clone is created so that we can have our own endio 
- 		 * where we call bio_endio on original bio 
- 		 * after corruption checks are done
- 		 */
+		/*
+		 * Prepare bio clone to handle disk read
+		 * clone is created so that we can have our own endio
+		 * where we call bio_endio on original bio
+		 * after corruption checks are done
+		 */
 		clone = bio_clone_fast(bio, GFP_NOIO, dc->bs);
 		if (!clone) {
 			r = -ENOMEM;
 			goto out_clone_fail;
 		}
 
-		/* 
- 		 * Store the check_io structure in bio's private field
- 		 * used as indirect argument when disk read is finished
- 		 */
+		/*
+		 * Store the check_io structure in bio's private field
+		 * used as indirect argument when disk read is finished
+		 */
 		clone->bi_end_io = dedup_check_endio;
 		clone->bi_private = io;
 
@@ -533,7 +531,7 @@ struct dedup_args {
 	char backend_str[MAX_BACKEND_NAME_LEN];
 
 	u32 flushrq;
-	
+
 	bool corruption_flag;
 };
 
@@ -691,7 +689,7 @@ static int parse_dedup_args(struct dedup_args *da, int argc,
 	r = parse_flushrq(da, &as, err);
 	if (r)
 		return r;
-	
+
 	r = parse_corruption_flag(da, &as, err);
 	if (r)
 		return r;

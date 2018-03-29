@@ -237,7 +237,7 @@ static int kvs_lookup_linear_inram(struct kvstore *kvs, void *key,
 {
 	u64 idx;
 	char *ptr;
-	int r=-ENODATA;
+	int r = -ENODATA;
 	struct kvstore_inram *kvinram = NULL;
 
 	kvinram = container_of(kvs, struct kvstore_inram, ckvs);
@@ -424,7 +424,7 @@ static int kvs_lookup_sparse_inram(struct kvstore *kvs, void *key,
 	u32 entry_size, head, tail;
 	char *ptr;
 	struct kvstore_inram *kvinram = NULL;
-	int r=-ENODATA;
+	int r = -ENODATA;
 
 	if (ksize != kvs->ksize)
 		return -EINVAL;
