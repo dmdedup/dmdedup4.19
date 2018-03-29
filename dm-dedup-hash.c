@@ -145,7 +145,7 @@ int compute_hash_bio(struct hash_desc_table *desc_table,
 	struct bvec_iter iter;
        struct shash_desc *desc;
 #ifdef __INJECT_ERROR__
-	bool error_inject = false;
+	bool inject_error = false;
 #endif
 
 	slot = get_next_slot(desc_table);
@@ -158,12 +158,12 @@ int compute_hash_bio(struct hash_desc_table *desc_table,
 #ifdef __INJECT_ERROR__
 		/*
 		 *  In error injection mode if buffer starts
-		 *  with some special string then overwrite hash
-		 *  first 8 bytes by predefined value.
+		 *  with some special string "dmdedup" then overwrite
+		 *  hash first 8 bytes by predefined value "xxxxxxxx".
 		 */
 		if (memcmp(page_address(bvec.bv_page)+bvec.bv_offset,
 			"dmdedup", 7) == 0) {
-			error_inject = true;
+			inject_error = true;
 		}
 #endif
 
@@ -171,10 +171,14 @@ int compute_hash_bio(struct hash_desc_table *desc_table,
 	   page_address(bvec.bv_page)+bvec.bv_offset,
 	   bvec.bv_len);
 	}
-       crypto_shash_final(desc, hash);
+    crypto_shash_final(desc, hash);
 
+/*
+ * For unit testing if we find special buffer then inject_error
+ * will be set and so we need to overwrite first 8 bytes.
+ */
 #ifdef __INJECT_ERROR__
-	if (error_inject)
+	if (inject_error)
 		memcpy(hash, "xxxxxxxx", 8);
 #endif
 

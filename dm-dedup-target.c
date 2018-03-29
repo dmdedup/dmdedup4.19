@@ -100,11 +100,11 @@ static int handle_read(struct dedup_config *dc, struct bio *bio)
 	r = dc->kvs_lbn_pbn->kvs_lookup(dc->kvs_lbn_pbn, (void *)&lbn,
 			sizeof(lbn), (void *)&lbnpbn_value, &vsize);
 
-	if (r == 0) { 
+	if (r == -ENODATA) { 
 		/* unable to find the entry in LBN->PBN store */
 		
 		bio_zero_endio(bio);
-	} else if (r == 1) { 
+	} else if (r == 0) { 
 		/* entry found in the LBN->PBN store */
 		
 		/* if corruption check not enabled directly do io request */
@@ -206,7 +206,7 @@ static int handle_write_no_hash(struct dedup_config *dc,
 
 	r = dc->kvs_lbn_pbn->kvs_lookup(dc->kvs_lbn_pbn, (void *)&lbn,
 			sizeof(lbn), (void *)&lbnpbn_value, &vsize);
-	if (r == 0) {
+	if (r == -ENODATA) {
 		/* No LBN->PBN mapping entry */
 		dc->newwrites++;
 		r = write_to_new_block(dc, &pbn_new, bio, lbn);
@@ -305,7 +305,7 @@ static int handle_write_with_hash(struct dedup_config *dc, struct bio *bio,
 	pbn_new = hashpbn_value.pbn;
 	r = dc->kvs_lbn_pbn->kvs_lookup(dc->kvs_lbn_pbn, (void *)&lbn,
 			sizeof(lbn), (void *)&lbnpbn_value, &vsize);
-	if (r == 0) {
+	if (r == -ENODATA) {
 		/* No LBN->PBN mapping entry */
 		dc->newwrites++;
 
@@ -416,9 +416,9 @@ static int handle_write(struct dedup_config *dc, struct bio *bio)
 	r = dc->kvs_hash_pbn->kvs_lookup(dc->kvs_hash_pbn, hash,
 				dc->crypto_key_size, &hashpbn_value, &vsize);
 
-	if (r == 0)
+	if (r == -ENODATA)
 		r = handle_write_no_hash(dc, bio, lbn, hash);
-	else if (r > 0)
+	else if (r == 0)
 		r = handle_write_with_hash(dc, bio, lbn, hash,
 					   hashpbn_value);
 

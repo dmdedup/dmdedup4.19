@@ -36,7 +36,6 @@
 #include "dm-dedup-target.h"
 
 #define MAX_LINEAR_PROBING_LIMIT 5
-#define MAX_LINEAR_PROBING_INITIALIZER 0
 
 extern struct metadata_ops metadata_ops_cowbtree;
 
