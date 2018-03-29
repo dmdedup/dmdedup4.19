@@ -102,6 +102,14 @@ struct metadata_superblock {
 	__le64 metadata_nr_blocks;/* Number of metadata blocks used. */
 } __packed;
 
+/*
+ * It initializes the root of linear and sparse cow btrees and also
+ * in case sparse cowbtree restores last set max linear probing value
+ * from superblock stored in metadata device.
+ *
+ * Return -ERR code on failure.
+ * return 0 on success.
+ */
 static int __begin_transaction(struct metadata *md)
 {
 	int r;
@@ -130,6 +138,13 @@ static int __begin_transaction(struct metadata *md)
 	return r;
 }
 
+/*
+ * It stores the current state of metadata device into superblock and write it
+ * to disk.
+ *
+ * Returns -ERR on failure.
+ * Returns 0 on success.
+ */
 static int __commit_transaction(struct metadata *md, bool clean_shutdown_flag)
 {
 	int r = 0;
@@ -205,6 +220,7 @@ out:
 	return r;
 }
 
+/* It initializes super block fields. */
 static int write_initial_superblock(struct metadata *md)
 {
 	int r;
@@ -263,6 +279,13 @@ bad_locked:
 	return r;
 }
 
+/*
+ * It checks if first block of superblock is zeroed out or not. If found
+ * zeroed out result is filled with true otherwise false.
+ *
+ * Returns -ERR code on error scenario.
+ * Returns 0 on successful execution.
+ */
 static int superblock_all_zeroes(struct dm_block_manager *bm, bool *result)
 {
 	int r;
@@ -291,6 +314,13 @@ static int superblock_all_zeroes(struct dm_block_manager *bm, bool *result)
 	return 0;
 }
 
+/*
+ * It verifies superblock various fields set with correct
+ * values or not.
+ *
+ * Returns -ERR on failure.
+ * Returns 0 on success.
+ */
 static int verify_superblock(struct dm_block_manager *bm)
 {
 	int r;
@@ -548,7 +578,12 @@ static int get_refcount_cowbtree(struct metadata *md, uint64_t blockn)
 /*********************************************************
  *		Linear KVS Functions			 *
  *********************************************************/
-
+/*
+ * It deleted key from btree.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
 static int kvs_delete_linear_cowbtree(struct kvstore *kvs,
 				      void *key, int32_t ksize)
 {
@@ -596,6 +631,11 @@ static int kvs_lookup_linear_cowbtree(struct kvstore *kvs, void *key,
 		return r;
 }
 
+/* Inserts key into cow btree.
+ *
+ * Returns -ERR code in failure.
+ * Reurns 0 on success.
+ */
 static int kvs_insert_linear_cowbtree(struct kvstore *kvs, void *key,
 				      s32 ksize, void *value,
 				      int32_t vsize)
