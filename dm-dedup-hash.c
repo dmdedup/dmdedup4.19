@@ -27,6 +27,9 @@
  * BUG, which complains "Scheduling while atomic". Hence to avoid
  * this scenario, we moved the declaration and initialization out
  * of critical path.
+ *
+ * Returns NULL on failure.
+ * Returns valid pointer on success.
  */
 static struct shash_desc *slot_to_desc(struct hash_desc_table *desc_table,
 							unsigned long slot)
@@ -35,6 +38,13 @@ static struct shash_desc *slot_to_desc(struct hash_desc_table *desc_table,
        return desc_table->desc[slot];
 }
 
+/*
+ * It allocates cipher handle for message digest for each slot in
+ * descriptor table.
+ *
+ * Returns ERR_PTR on failure.
+ * Returns valid descriptor table pointer on success.
+ */
 struct hash_desc_table *desc_table_init(char *hash_alg)
 {
 	int i = 0;
@@ -77,6 +87,7 @@ error:
        return out;
 }
 
+/* It frees cipher handle allocated for each of slot. */
 void desc_table_deinit(struct hash_desc_table *desc_table)
 {
 	int i = 0;
@@ -90,6 +101,12 @@ void desc_table_deinit(struct hash_desc_table *desc_table)
 	desc_table = NULL;
 }
 
+/*
+ * It gets first available free slot.
+ *
+ * Returns -ERR code on failure.
+ * Returns valid slot no on success.
+ */
 static int get_next_slot(struct hash_desc_table *desc_table)
 {
 	unsigned long num = 0;
@@ -115,6 +132,7 @@ static int get_next_slot(struct hash_desc_table *desc_table)
 	return num;
 }
 
+/* Marks the slot free in bitmap. */
 static void put_slot(struct hash_desc_table *desc_table, unsigned long slot)
 {
 	BUG_ON(slot >= DEDUP_HASH_DESC_COUNT);
@@ -122,6 +140,7 @@ static void put_slot(struct hash_desc_table *desc_table, unsigned long slot)
 	desc_table->free_bitmap[slot] = true;
 }
 
+/* It returns size of message digest cipher. */
 unsigned int get_hash_digestsize(struct hash_desc_table *desc_table)
 {
 	unsigned long slot;
@@ -136,6 +155,14 @@ unsigned int get_hash_digestsize(struct hash_desc_table *desc_table)
        return ret;
 }
 
+/*
+ * It (re-)initializes the message digest handle and updates
+ * the message digest state for each page present in bio
+ * vector segment.
+ *
+ * Returns -ERR code on failure.
+ * Returns 0 on success.
+ */
 int compute_hash_bio(struct hash_desc_table *desc_table,
 		     struct bio *bio, char *hash)
 {
