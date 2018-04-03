@@ -24,7 +24,6 @@
 #include "dm-dedup-backend.h"
 #include "dm-dedup-kvstore.h"
 
-#define EMPTY_ENTRY -5
 #define DELETED_ENTRY 0x6B
 
 #define UINT32_MAX	(4294967295U)

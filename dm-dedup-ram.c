@@ -18,7 +18,7 @@
 #include "dm-dedup-ram.h"
 #include "dm-dedup-backend.h"
 
-#define EMPTY_ENTRY -5
+#define EMPTY_ENTRY 0xFF
 #define DELETED_ENTRY 0x6B
 
 #define UINT32_MAX	(4294967295U)
