@@ -705,10 +705,10 @@ static int kvs_delete_sparse_cowbtree(struct kvstore *kvs,
 				      void *key, int32_t ksize)
 {
 	char *entry;
-	u64 key_val;
-	int r;
+	char *cur, *next;
+	u64 key_val, cur_key_val;
+	int r, r1;
 	struct kvstore_cbt_sparse *kvcbt = NULL;
-	int lp_count = 0;
 
 	kvcbt = container_of(kvs, struct kvstore_cbt_sparse, ckvs);
 
@@ -717,46 +717,70 @@ static int kvs_delete_sparse_cowbtree(struct kvstore *kvs,
 
 	entry = kmalloc(kvcbt->entry_size, GFP_NOIO);
 	if (!entry)
-		return -ENOMEM;
 
 	key_val = (*(uint64_t *)key);
 
-repeat:
+	r = dm_btree_lookup(&(kvcbt->info), kvcbt->root, &key_val, cur);
 
-	r = dm_btree_lookup(&(kvcbt->info), kvcbt->root, &key_val, entry);
 	if (r == -ENODATA) {
 		return -ENODEV;
-	} else if (r >= 0) {
-		if (!memcmp(entry, key, ksize)) {
+	} else if (r == 0) {
+repeat:
+		cur_key_val = key_val;
+		key_val++;
+		r1 = dm_btree_lookup(&(kvcbt->info),
+							 kvcbt->root,
+							 &key_val, next);
 
-			if (lp_count == 0) {
-				r = dm_btree_remove(&(kvcbt->info),
-					    kvcbt->root, &key_val,
-					    &(kvcbt->root));
+		/* Key found. */
+		if (!memcmp(cur, key, ksize)) {
+			/*
+			 * There is a next key and
+			 * it is a linearly probed one.
+			 */
+			if (r1 == 0 &&
+				memcmp(cur, next, sizeof(key_val)) == 0) {
+
+				memset(cur, DELETED_ENTRY, kvcbt->entry_size);
+				       __dm_bless_for_disk(&cur_key_val);
+
+				r = dm_btree_insert(&(kvcbt->info),
+									kvcbt->root,
+									&cur_key_val,
+									cur, &(kvcbt->root));
+
 			} else {
 				/*
-				 * For linearly probed entries, instead of
-				 * removing the entry from the btree, we
-				 * mark the entry as deleted to avoid holes
-				 * in linear probing.
+				 * There is a next key and
+				 * it is not a linearly probed one.
+				 * OR
+				 * There is no next key.
 				 */
+				r = dm_btree_remove(&(kvcbt->info),
+									kvcbt->root,
+									&cur_key_val,
+									&(kvcbt->root));
 
-				memset(entry, DELETED_ENTRY, kvcbt->entry_size);
-				__dm_bless_for_disk(&key_val);
-				r = dm_btree_insert(&(kvcbt->info),
-						kvcbt->root, &key_val,
-						entry, &(kvcbt->root));
 			}
-			kfree(entry);
+			/* Successful key deletion. */
+			kfree(cur);
+			kfree(next);
 			return r;
+		} else if (r1 == 0) {
+			/* Key not found but there is a next key. */
+			cur = next;
+			goto repeat;
 		}
-		key_val++;
-		lp_count++;
-		goto repeat;
-	} else {
-		kfree(entry);
-		return r;
+		/*
+		 * Key not found and
+		 * there is no next key, update return value.
+		 */
+		r = r1;
 	}
+	/* Current key not found */
+	kfree(cur);
+	kfree(next);
+	return r;
 }
 
 /*
