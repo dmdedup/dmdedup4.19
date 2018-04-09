@@ -733,7 +733,6 @@ repeat:
 		r1 = dm_btree_lookup(&(kvcbt->info),
 				     kvcbt->root,
 				     &key_val, next);
-
 		/* Key found. */
 		if (!memcmp(cur, key, ksize)) {
 			/*
@@ -750,7 +749,6 @@ repeat:
 						    kvcbt->root,
 						    &cur_key_val,
 						    cur, &(kvcbt->root));
-
 			} else {
 				/*
 				 * There is a next key and
@@ -762,7 +760,6 @@ repeat:
 						    kvcbt->root,
 						    &cur_key_val,
 						    &(kvcbt->root));
-
 			}
 			/* Successful key deletion. */
 			kfree(cur);
