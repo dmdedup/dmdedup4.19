@@ -24,6 +24,7 @@
 #include "dm-dedup-cbt.h"
 #include "dm-dedup-kvstore.h"
 #include "dm-dedup-check.h"
+#include "dm-dedup-test-handlewrite.h"
 
 #define MAX_DEV_NAME_LEN (64)
 
@@ -171,7 +172,7 @@ out:
 
 /*
  * Allocates pbn_new and increments the logical and physical block
- * counters.
+ * counters. Note that it also increments refcount internally.
  *
  * Returns -ERR code in failure.
  * Returns 0 on success.
@@ -197,8 +198,9 @@ static int allocate_block(struct dedup_config *dc, uint64_t *pbn_new)
  * Returns -ERR code in failure.
  * Returns 0 on success.
  */
-static int write_to_new_block(struct dedup_config *dc, uint64_t *pbn_new,
-			      struct bio *bio, uint64_t lbn)
+static int alloc_pbnblk_and_insert_lbn_pbn(struct dedup_config *dc,
+					   u64 *pbn_new,
+					   struct bio *bio, uint64_t lbn)
 {
 	int r = 0;
 	struct lbn_pbn_value lbnpbn_value;
@@ -213,7 +215,8 @@ static int write_to_new_block(struct dedup_config *dc, uint64_t *pbn_new,
 	do_io(dc, bio, *pbn_new);
 
 	r = dc->kvs_lbn_pbn->kvs_insert(dc->kvs_lbn_pbn, (void *)&lbn,
-		sizeof(lbn), (void *)&lbnpbn_value, sizeof(lbnpbn_value));
+					sizeof(lbn), (void *)&lbnpbn_value,
+					sizeof(lbnpbn_value));
 	if (r < 0)
 		dc->mdops->dec_refcount(dc->bmd, *pbn_new);
 
@@ -222,125 +225,132 @@ static int write_to_new_block(struct dedup_config *dc, uint64_t *pbn_new,
 
 /*
  * Internal function to handle write when lbn-pbn entry is not
- * present.
+ * present. It creates a new lbn-pbn mapping and insert given
+ * hash for this new pbn in hash-pbn mapping. Then increments
+ * refcount for this new pbn.
  *
  * Returns -ERR code on failure.
  * Returns 0 on success.
  */
 static int __handle_no_lbn_pbn(struct dedup_config *dc,
-				struct bio *bio, uint64_t lbn, u8 *hash)
+			       struct bio *bio, uint64_t lbn, u8 *hash)
 {
 	int r, ret;
 	u64 pbn_new;
 	struct hash_pbn_value hashpbn_value;
 
-	dc->newwrites++;
-	r = write_to_new_block(dc, &pbn_new, bio, lbn);
+	/* Create a new lbn-pbn mapping for given lbn */
+	r = alloc_pbnblk_and_insert_lbn_pbn(dc, &pbn_new, bio, lbn);
 	if (r < 0)
-		goto write_new_block_err;
+		goto out;
 
+	/* Inserts new hash-pbn mapping for given hash. */
 	hashpbn_value.pbn = pbn_new;
-
 	r = dc->kvs_hash_pbn->kvs_insert(dc->kvs_hash_pbn, (void *)hash,
-			dc->crypto_key_size, (void *)&hashpbn_value,
-			sizeof(hashpbn_value));
+					 dc->crypto_key_size,
+					 (void *)&hashpbn_value,
+					 sizeof(hashpbn_value));
 	if (r < 0)
 		goto kvs_insert_err;
 
+	/* Increments refcount for new pbn entry created. */
 	r = dc->mdops->inc_refcount(dc->bmd, pbn_new);
 	if (r < 0)
 		goto inc_refcount_err;
 
+	/* On all successful steps increment new write count. */
+	dc->newwrites++;
 	goto out;
 
+/* Error handling code path */
 inc_refcount_err:
+	/* Undo actions taken in hash-pbn kvs insert. */
 	ret = dc->kvs_hash_pbn->kvs_delete(dc->kvs_hash_pbn,
-			(void *)hash, dc->crypto_key_size);
+					   (void *)hash, dc->crypto_key_size);
 	if (ret < 0)
-		DMERR("Error in deleting previously created hash pbn entry");
+		DMERR("Error in deleting previously created hash pbn entry.");
 kvs_insert_err:
+	/* Undo actions taken in alloc_pbnblk_and_insert_lbn_pbn. */
 	ret = dc->kvs_lbn_pbn->kvs_delete(dc->kvs_lbn_pbn,
-			(void *)&lbn, sizeof(lbn));
+					  (void *)&lbn, sizeof(lbn));
 	if (ret < 0)
-		DMERR("Error in deleting previously created lbn pbn entry");
-
+		DMERR("Error in deleting previously created lbn pbn entry.");
 	ret = dc->mdops->dec_refcount(dc->bmd, pbn_new);
 	if (ret < 0)
-		DMERR("Error in decrementing previously incremented refcount.");
-write_new_block_err:
-	dc->newwrites--;
-
+		DMERR("ERROR in decrementing previously incremented refcount.");
 out:
 	return r;
 }
 
 /*
  * Internal function to handle write when lbn-pbn mapping is present.
+ * It creates a block for new pbn and inserts lbn-pbn(new) mapping.
+ * Decrements old pbn refcount and inserts new hash-pbn entry followed
+ * by incrementing refcount of new pbn.
  *
  * Returns -ERR code on failure.
  * Returns 0 on success.
  */
-static int __handle_lbn_pbn(struct dedup_config *dc,
-	struct bio *bio, uint64_t lbn, struct lbn_pbn_value *lbnpbn_value,
-	u8 *hash)
+static int __handle_has_lbn_pbn(struct dedup_config *dc,
+				struct bio *bio, uint64_t lbn, u8 *hash,
+				u64 pbn_old)
 {
 	int r, ret;
-	u64 pbn_new, pbn_old;
+	u64 pbn_new;
 	struct hash_pbn_value hashpbn_value;
 
-	dc->overwrites++;
-	r = write_to_new_block(dc, &pbn_new, bio, lbn);
+	/* Allocates a new block for new pbn and inserts lbn-pbn lapping. */
+	r = alloc_pbnblk_and_insert_lbn_pbn(dc, &pbn_new, bio, lbn);
 	if (r < 0)
-		goto write_new_block_err;
+		goto out;
 
-	pbn_old = lbnpbn_value->pbn;
-	r = dc->mdops->dec_refcount(dc->bmd, pbn_old);
-	if (r < 0)
-		goto dec_refcount_err;
-
-	dc->logical_block_counter--;
-
+	/* Inserts new hash-pbn entry for given hash. */
 	hashpbn_value.pbn = pbn_new;
-
 	r = dc->kvs_hash_pbn->kvs_insert(dc->kvs_hash_pbn, (void *)hash,
-				dc->crypto_key_size, (void *)&hashpbn_value,
-				sizeof(hashpbn_value));
+					 dc->crypto_key_size,
+					 (void *)&hashpbn_value,
+					 sizeof(hashpbn_value));
 	if (r < 0)
 		goto kvs_insert_err;
 
+	/* Increments refcount of new pbn. */
 	r = dc->mdops->inc_refcount(dc->bmd, pbn_new);
 	if (r < 0)
 		goto inc_refcount_err;
 
+	/* Decrements refcount for old pbn and decrement logical block cnt. */
+	r = dc->mdops->dec_refcount(dc->bmd, pbn_old);
+	if (r < 0)
+		goto dec_refcount_err;
+	dc->logical_block_counter--;
+
+	/* On all successful steps increment overwrite count. */
+	dc->overwrites++;
 	goto out;
 
-inc_refcount_err:
-	ret = dc->kvs_hash_pbn->kvs_delete(dc->kvs_hash_pbn,
-			(void *)hash, dc->crypto_key_size);
-	if (ret < 0)
-		DMERR("Error in deleting previously created hash pbn entry");
-
-kvs_insert_err:
-	dc->logical_block_counter++;
-	ret = dc->mdops->inc_refcount(dc->bmd, pbn_old);
-	if (ret < 0)
-		DMERR("Error in incrementing previously decremented ref count");
-
+/* Error handling code path. */
 dec_refcount_err:
-	/* TODO: Check if lbn-pbn entry is deleted before? */
-	ret = dc->kvs_lbn_pbn->kvs_insert(dc->kvs_lbn_pbn, (void *)&lbn,
-			sizeof(lbn), (void *)lbnpbn_value,
-			sizeof(struct lbn_pbn_value));
-	if (ret < 0)
-		DMERR("Error in inserting previously deleted lbn pbn entry");
-
+	/* Undo actions taken while incrementing refcount of new pbn. */
 	ret = dc->mdops->dec_refcount(dc->bmd, pbn_new);
 	if (ret < 0)
 		DMERR("Error in decrementing previously incremented refcount.");
 
-write_new_block_err:
-	dc->overwrites--;
+inc_refcount_err:
+	ret = dc->kvs_hash_pbn->kvs_delete(dc->kvs_hash_pbn, (void *)hash,
+					   dc->crypto_key_size);
+	if (ret < 0)
+		DMERR("Error in deleting previously inserted hash pbn entry");
 
+kvs_insert_err:
+	/* Undo actions taken in alloc_pbnblk_and_insert_lbn_pbn. */
+	ret = dc->kvs_lbn_pbn->kvs_delete(dc->kvs_lbn_pbn, (void *)&lbn,
+					  sizeof(lbn));
+	if (ret < 0)
+		DMERR("Error in deleting previously created lbn pbn entry");
+
+	ret	= dc->mdops->dec_refcount(dc->bmd, pbn_new);
+	if (ret < 0)
+		DMERR("ERROR in decrementing previously incremented refcount.");
 out:
 	return r;
 }
@@ -358,18 +368,18 @@ static int handle_write_no_hash(struct dedup_config *dc,
 	u32 vsize;
 	struct lbn_pbn_value lbnpbn_value;
 
-	dc->uniqwrites++;
 	r = dc->kvs_lbn_pbn->kvs_lookup(dc->kvs_lbn_pbn, (void *)&lbn,
-			sizeof(lbn), (void *)&lbnpbn_value, &vsize);
+					sizeof(lbn), (void *)&lbnpbn_value,
+					&vsize);
 	if (r == -ENODATA) {
 		/* No LBN->PBN mapping entry */
 		r = __handle_no_lbn_pbn(dc, bio, lbn, hash);
 	} else if (r == 0) {
 		/* LBN->PBN mappings exist */
-		r = __handle_lbn_pbn(dc, bio, lbn, &lbnpbn_value, hash);
+		r = __handle_has_lbn_pbn(dc, bio, lbn, hash, lbnpbn_value.pbn);
 	}
-	if (r < 0)
-		dc->uniqwrites--;
+	if (r == 0)
+		dc->uniqwrites++;
 	return r;
 }
 
@@ -511,7 +521,8 @@ static int handle_write(struct dedup_config *dc, struct bio *bio)
 		return r;
 
 	r = dc->kvs_hash_pbn->kvs_lookup(dc->kvs_hash_pbn, hash,
-				dc->crypto_key_size, &hashpbn_value, &vsize);
+					 dc->crypto_key_size,
+					 &hashpbn_value, &vsize);
 
 	if (r == -ENODATA)
 		r = handle_write_no_hash(dc, bio, lbn, hash);
