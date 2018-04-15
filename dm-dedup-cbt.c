@@ -703,11 +703,43 @@ badtree:
  *		Sparse KVS Functions			*
  ********************************************************/
 
+static int kvs_delete_entry(struct kvstore_cbt_sparse *kvcbt,
+			    char *cur_entry, char *next_entry,
+			    u64 cur_key_val, int ret_next)
+{
+	int r;
+
+	if (ret_next == 0 &&
+	    memcmp(cur_entry, next_entry, sizeof(cur_key_val)) == 0) {
+		/*
+		 * There is a next key and it is a linearly probed one.
+		 */
+		memset(cur_entry, DELETED_ENTRY, kvcbt->entry_size);
+			       __dm_bless_for_disk(&cur_key_val);
+
+		r = dm_btree_insert(&(kvcbt->info), kvcbt->root,
+				    &cur_key_val, cur_entry, &(kvcbt->root));
+		DMINFO("Marked as tombstone for keyval = %lld", cur_key_val);
+	} else {
+		/*
+		 * There is a next key and it is not a linearly probed one.
+		 * OR
+		 * There is no next key.
+		 */
+		r = dm_btree_remove(&(kvcbt->info),
+				    kvcbt->root,
+				    &cur_key_val,
+				    &(kvcbt->root));
+		DMINFO("Performed actual deletion for keyval = %lld",
+		       cur_key_val);
+	}
+	return r;
+}
+
 static int kvs_delete_sparse_cowbtree(struct kvstore *kvs,
 				      void *key, int32_t ksize)
 {
-	char *entry;
-	char *cur, *next;
+	char *cur_entry, *next_entry;
 	u64 key_val, cur_key_val;
 	int r, r1;
 	struct kvstore_cbt_sparse *kvcbt = NULL;
@@ -717,68 +749,47 @@ static int kvs_delete_sparse_cowbtree(struct kvstore *kvs,
 	if (ksize != kvs->ksize)
 		return -EINVAL;
 
-	entry = kmalloc(kvcbt->entry_size, GFP_NOIO);
-	if (!entry)
+	cur_entry = kmalloc(kvcbt->entry_size, GFP_NOIO);
+	if (!cur_entry)
+		return -ENOMEM;
 
 	key_val = (*(uint64_t *)key);
 
-	r = dm_btree_lookup(&(kvcbt->info), kvcbt->root, &key_val, cur);
+	r = dm_btree_lookup(&(kvcbt->info), kvcbt->root, &key_val, cur_entry);
 
 	if (r == -ENODATA) {
 		return -ENODEV;
-	} else if (r == 0) {
-repeat:
+	}
+	while (1) {
 		cur_key_val = key_val;
 		key_val++;
+
+		next_entry = kmalloc(kvcbt->entry_size, GFP_NOIO);
+		if (!next_entry)
+			return -ENOMEM;
+
 		r1 = dm_btree_lookup(&(kvcbt->info),
 				     kvcbt->root,
-				     &key_val, next);
-		/* Key found. */
-		if (!memcmp(cur, key, ksize)) {
-			/*
-			 * There is a next key and
-			 * it is a linearly probed one.
-			 */
-			if (r1 == 0 &&
-				memcmp(cur, next, sizeof(key_val)) == 0) {
+				     &key_val, next_entry);
 
-				memset(cur, DELETED_ENTRY, kvcbt->entry_size);
-				       __dm_bless_for_disk(&cur_key_val);
-
-				r = dm_btree_insert(&(kvcbt->info),
-						    kvcbt->root,
-						    &cur_key_val,
-						    cur, &(kvcbt->root));
-			} else {
-				/*
-				 * There is a next key and
-				 * it is not a linearly probed one.
-				 * OR
-				 * There is no next key.
-				 */
-				r = dm_btree_remove(&(kvcbt->info),
-						    kvcbt->root,
-						    &cur_key_val,
-						    &(kvcbt->root));
-			}
-			/* Successful key deletion. */
-			kfree(cur);
-			kfree(next);
-			return r;
+		if (!memcmp(cur_entry, key, ksize)) {
+			/* Key found. */
+			r = kvs_delete_entry(kvcbt, cur_entry, next_entry,
+					     cur_key_val, r1);
+			DMINFO("Deleted key successfully\n");
+			goto out;
 		} else if (r1 == 0) {
 			/* Key not found but there is a next key. */
-			cur = next;
-			goto repeat;
+			cur_entry = next_entry;
+		} else {
+			break;
 		}
-		/*
-		 * Key not found and
-		 * there is no next key, update return value.
-		 */
-		r = r1;
 	}
-	/* Current key not found */
-	kfree(cur);
-	kfree(next);
+	/* Key not found and there is no next key, update return value. */
+	r = r1;
+out:
+	kfree(cur_entry);
+	kfree(next_entry);
 	return r;
 }
 
