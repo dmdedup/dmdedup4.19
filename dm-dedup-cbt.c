@@ -23,6 +23,7 @@
 #include "dm-dedup-cbt.h"
 #include "dm-dedup-backend.h"
 #include "dm-dedup-kvstore.h"
+#include "dm-dedup-ut-handlewrite.h"
 
 #define EMPTY_ENTRY -5
 #define DELETED_ENTRY -6
@@ -552,12 +553,12 @@ static int alloc_data_block_cowbtree(struct metadata *md, uint64_t *blockn)
 	return dm_sm_new_block(md->data_sm, blockn);
 }
 
-static int inc_refcount_cowbtree(struct metadata *md, uint64_t blockn)
+int inc_refcount_cowbtree(struct metadata *md, uint64_t blockn)
 {
 	return dm_sm_inc_block(md->data_sm, blockn);
 }
 
-static int dec_refcount_cowbtree(struct metadata *md, uint64_t blockn)
+int dec_refcount_cowbtree(struct metadata *md, uint64_t blockn)
 {
 	return dm_sm_dec_block(md->data_sm, blockn);
 }
@@ -583,8 +584,8 @@ static int get_refcount_cowbtree(struct metadata *md, uint64_t blockn)
  * Returns -ERR code in failure.
  * Returns 0 on success.
  */
-static int kvs_delete_linear_cowbtree(struct kvstore *kvs,
-				      void *key, int32_t ksize)
+int kvs_delete_linear_cowbtree(struct kvstore *kvs,
+			       void *key, int32_t ksize)
 {
 	int r;
 	struct kvstore_cbt_linear *kvcbt = NULL;
@@ -630,9 +631,9 @@ static int kvs_lookup_linear_cowbtree(struct kvstore *kvs, void *key,
  * Returns -ERR code in failure.
  * Reurns 0 on success.
  */
-static int kvs_insert_linear_cowbtree(struct kvstore *kvs, void *key,
-				      s32 ksize, void *value,
-				      int32_t vsize)
+int kvs_insert_linear_cowbtree(struct kvstore *kvs, void *key,
+			       s32 ksize, void *value,
+			       int32_t vsize)
 {
 	int inserted;
 	struct kvstore_cbt_linear *kvcbt = NULL;
@@ -685,9 +686,11 @@ static struct kvstore *kvs_create_linear_cowbtree(struct metadata *md,
 	kvs->info.value_type.equal = NULL;
 
 	if (!unformatted) {
-		kvs->ckvs.kvs_insert = kvs_insert_linear_cowbtree;
+		kvs->ckvs.kvs_insert = GLUE(INJECT_ERR_STR,
+					    kvs_insert_linear_cowbtree);
 		kvs->ckvs.kvs_lookup = kvs_lookup_linear_cowbtree;
-		kvs->ckvs.kvs_delete = kvs_delete_linear_cowbtree;
+		kvs->ckvs.kvs_delete = GLUE(INJECT_ERR_STR,
+					    kvs_delete_linear_cowbtree);
 		kvs->ckvs.kvs_iterate = NULL;
 
 		md->kvs_linear = kvs;
@@ -702,9 +705,11 @@ static struct kvstore *kvs_create_linear_cowbtree(struct metadata *md,
 		/* I think this should be moved below the 4 lines below */
 		flush_meta_cowbtree(md);
 
-		kvs->ckvs.kvs_insert = kvs_insert_linear_cowbtree;
+		kvs->ckvs.kvs_insert = GLUE(INJECT_ERR_STR,
+					    kvs_insert_linear_cowbtree);
 		kvs->ckvs.kvs_lookup = kvs_lookup_linear_cowbtree;
-		kvs->ckvs.kvs_delete = kvs_delete_linear_cowbtree;
+		kvs->ckvs.kvs_delete = GLUE(INJECT_ERR_STR,
+					    kvs_delete_linear_cowbtree);
 		kvs->ckvs.kvs_iterate = NULL;
 
 		md->kvs_linear = kvs;
@@ -721,8 +726,8 @@ badtree:
  *		Sparse KVS Functions			*
  ********************************************************/
 
-static int kvs_delete_sparse_cowbtree(struct kvstore *kvs,
-				      void *key, int32_t ksize)
+int kvs_delete_sparse_cowbtree(struct kvstore *kvs,
+			       void *key, int32_t ksize)
 {
 	char *entry;
 	u64 key_val;
@@ -827,9 +832,8 @@ static int kvs_lookup_sparse_cowbtree(struct kvstore *kvs, void *key,
  * Returns -ERR code on failure.
  * Returns 0 on success.
  */
-static int kvs_insert_sparse_cowbtree(struct kvstore *kvs, void *key,
-				      s32 ksize, void *value,
-				      int32_t vsize)
+int kvs_insert_sparse_cowbtree(struct kvstore *kvs, void *key,
+			       s32 ksize, void *value, int32_t vsize)
 {
 	char *entry;
 	u64 key_val;
@@ -982,9 +986,11 @@ static struct kvstore *kvs_create_sparse_cowbtree(struct metadata *md,
 	kvs->lpc_cur = 0;
 
 	if (!unformatted) {
-		kvs->ckvs.kvs_insert = kvs_insert_sparse_cowbtree;
+		kvs->ckvs.kvs_insert = GLUE(INJECT_ERR_STR,
+					    kvs_insert_sparse_cowbtree);
 		kvs->ckvs.kvs_lookup = kvs_lookup_sparse_cowbtree;
-		kvs->ckvs.kvs_delete = kvs_delete_sparse_cowbtree;
+		kvs->ckvs.kvs_delete = GLUE(INJECT_ERR_STR,
+					    kvs_delete_sparse_cowbtree);
 		kvs->ckvs.kvs_iterate = kvs_iterate_sparse_cowbtree;
 
 		md->kvs_sparse = kvs;
@@ -999,9 +1005,11 @@ static struct kvstore *kvs_create_sparse_cowbtree(struct metadata *md,
 		/* I think this should be moved below the 4 lines below */
 		flush_meta_cowbtree(md);
 
-		kvs->ckvs.kvs_insert = kvs_insert_sparse_cowbtree;
+		kvs->ckvs.kvs_insert = GLUE(INJECT_ERR_STR,
+					    kvs_insert_sparse_cowbtree);
 		kvs->ckvs.kvs_lookup = kvs_lookup_sparse_cowbtree;
-		kvs->ckvs.kvs_delete = kvs_delete_sparse_cowbtree;
+		kvs->ckvs.kvs_delete = GLUE(INJECT_ERR_STR,
+					    kvs_delete_sparse_cowbtree);
 		kvs->ckvs.kvs_iterate = kvs_iterate_sparse_cowbtree;
 
 		md->kvs_sparse = kvs;
@@ -1039,8 +1047,8 @@ struct metadata_ops metadata_ops_cowbtree = {
 	.kvs_create_sparse = kvs_create_sparse_cowbtree,
 
 	.alloc_data_block = alloc_data_block_cowbtree,
-	.inc_refcount = inc_refcount_cowbtree,
-	.dec_refcount = dec_refcount_cowbtree,
+	.inc_refcount = GLUE(INJECT_ERR_STR, inc_refcount_cowbtree),
+	.dec_refcount = GLUE(INJECT_ERR_STR, dec_refcount_cowbtree),
 	.get_refcount = get_refcount_cowbtree,
 
 	.flush_meta = flush_meta_cowbtree,

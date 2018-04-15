@@ -24,7 +24,7 @@
 #include "dm-dedup-cbt.h"
 #include "dm-dedup-kvstore.h"
 #include "dm-dedup-check.h"
-#include "dm-dedup-test-handlewrite.h"
+#include "dm-dedup-ut-handlewrite.h"
 
 #define MAX_DEV_NAME_LEN (64)
 
@@ -177,7 +177,7 @@ out:
  * Returns -ERR code in failure.
  * Returns 0 on success.
  */
-static int allocate_block(struct dedup_config *dc, uint64_t *pbn_new)
+int allocate_block(struct dedup_config *dc, uint64_t *pbn_new)
 {
 	int r;
 
@@ -205,11 +205,7 @@ static int alloc_pbnblk_and_insert_lbn_pbn(struct dedup_config *dc,
 	int r = 0;
 	struct lbn_pbn_value lbnpbn_value;
 
-#ifndef __INJECT_ERR_ALLOC_PBNBLK__
-	r = allocate_block(dc, pbn_new);
-#else
-	r = -EINJECTERR;
-#endif
+	r = GLUE(INJECT_ERR_STR, allocate_block)(dc, pbn_new);
 	if (r < 0) {
 		r = -EIO;
 		return r;
@@ -218,13 +214,9 @@ static int alloc_pbnblk_and_insert_lbn_pbn(struct dedup_config *dc,
 	lbnpbn_value.pbn = *pbn_new;
 	do_io(dc, bio, *pbn_new);
 
-#ifndef __INJECT_ERR_ALLOC_PBNBLK_LBNPBN_INSERT__
 	r = dc->kvs_lbn_pbn->kvs_insert(dc->kvs_lbn_pbn, (void *)&lbn,
 					sizeof(lbn), (void *)&lbnpbn_value,
 					sizeof(lbnpbn_value));
-#else
-	r = -EINJECTERR;
-#endif
 	if (r < 0)
 		dc->mdops->dec_refcount(dc->bmd, *pbn_new);
 
@@ -254,23 +246,15 @@ static int __handle_no_lbn_pbn(struct dedup_config *dc,
 
 	/* Inserts new hash-pbn mapping for given hash. */
 	hashpbn_value.pbn = pbn_new;
-#ifndef __INJECT_ERR_HANDLE_NO_LBNPBN_KVS_INSERT__
 	r = dc->kvs_hash_pbn->kvs_insert(dc->kvs_hash_pbn, (void *)hash,
 					 dc->crypto_key_size,
 					 (void *)&hashpbn_value,
 					 sizeof(hashpbn_value));
-#else
-	r = -EINJECTERR;
-#endif
 	if (r < 0)
 		goto kvs_insert_err;
 
 	/* Increments refcount for new pbn entry created. */
-#ifndef __INJECT_ERR_HANDLE_NO_LBNPBN_INC_REFCNT__
 	r = dc->mdops->inc_refcount(dc->bmd, pbn_new);
-#else
-	r = -EINJECTERR;
-#endif
 	if (r < 0)
 		goto inc_refcount_err;
 
@@ -281,29 +265,17 @@ static int __handle_no_lbn_pbn(struct dedup_config *dc,
 /* Error handling code path */
 inc_refcount_err:
 	/* Undo actions taken in hash-pbn kvs insert. */
-#ifndef __INJECT_ERR_HANDLE_NO_LBNPBN_KVS_DELETE_ERRPATH_1__
 	ret = dc->kvs_hash_pbn->kvs_delete(dc->kvs_hash_pbn,
 					   (void *)hash, dc->crypto_key_size);
-#else
-	ret = -EINJECTERR;
-#endif
 	if (ret < 0)
 		DMERR("Error in deleting previously created hash pbn entry.");
 kvs_insert_err:
 	/* Undo actions taken in alloc_pbnblk_and_insert_lbn_pbn. */
-#ifndef __INJECT_ERR_HANDLE_NO_LBNPBN_KVS_DELETE_ERRPATH_2__
 	ret = dc->kvs_lbn_pbn->kvs_delete(dc->kvs_lbn_pbn,
 					  (void *)&lbn, sizeof(lbn));
-#else
-	ret = -EINJECTERR;
-#endif
 	if (ret < 0)
 		DMERR("Error in deleting previously created lbn pbn entry.");
-#ifndef __INJECT_ERR_HANDLE_NO_LBNPBN_DEC_REFCNT_ERRPATH__
 	ret = dc->mdops->dec_refcount(dc->bmd, pbn_new);
-#else
-	ret = -EINJECTERR;
-#endif
 	if (ret < 0)
 		DMERR("ERROR in decrementing previously incremented refcount.");
 out:
@@ -334,32 +306,20 @@ static int __handle_has_lbn_pbn(struct dedup_config *dc,
 
 	/* Inserts new hash-pbn entry for given hash. */
 	hashpbn_value.pbn = pbn_new;
-#ifndef __INJECT_ERR_HANDLE_HAS_LBNPBN_KVS_INSERT__
 	r = dc->kvs_hash_pbn->kvs_insert(dc->kvs_hash_pbn, (void *)hash,
 					 dc->crypto_key_size,
 					 (void *)&hashpbn_value,
 					 sizeof(hashpbn_value));
-#else
-	r = -EINJECTERR;
-#endif
 	if (r < 0)
 		goto kvs_insert_err;
 
 	/* Increments refcount of new pbn. */
-#ifndef __INJECT_ERR_HANDLE_HAS_LBNPBN_INC_REFCNT__
 	r = dc->mdops->inc_refcount(dc->bmd, pbn_new);
-#else
-	r = -EINJECTERR;
-#endif
 	if (r < 0)
 		goto inc_refcount_err;
 
 	/* Decrements refcount for old pbn and decrement logical block cnt. */
-#ifndef __INJECT_ERR_HANDLE_HAS_LBNPBN_DEC_REFCNT__
 	r = dc->mdops->dec_refcount(dc->bmd, pbn_old);
-#else
-	r = -EINJECTERR;
-#endif
 	if (r < 0)
 		goto dec_refcount_err;
 	dc->logical_block_counter--;
@@ -371,40 +331,24 @@ static int __handle_has_lbn_pbn(struct dedup_config *dc,
 /* Error handling code path. */
 dec_refcount_err:
 	/* Undo actions taken while incrementing refcount of new pbn. */
-#ifndef __INJECT_ERR_HANDLE_HAS_LBNPBN_DEC_REFCNT_ERRPATH_1__
 	ret = dc->mdops->dec_refcount(dc->bmd, pbn_new);
-#else
-	ret = -EINJECTERR;
-#endif
 	if (ret < 0)
 		DMERR("Error in decrementing previously incremented refcount.");
 
 inc_refcount_err:
-#ifndef __INJECT_ERR_HANDLE_HAS_LBNPBN_KVS_DELETE_ERRPATH_1__
 	ret = dc->kvs_hash_pbn->kvs_delete(dc->kvs_hash_pbn, (void *)hash,
 					   dc->crypto_key_size);
-#else
-	ret = -EINJECTERR;
-#endif
 	if (ret < 0)
 		DMERR("Error in deleting previously inserted hash pbn entry");
 
 kvs_insert_err:
 	/* Undo actions taken in alloc_pbnblk_and_insert_lbn_pbn. */
-#ifndef __INJECT_ERR_HANDLE_HAS_LBNPBN_KVS_DELETE_ERRPATH_2__
 	ret = dc->kvs_lbn_pbn->kvs_delete(dc->kvs_lbn_pbn, (void *)&lbn,
 					  sizeof(lbn));
-#else
-	ret = -EINJECTERR;
-#endif
 	if (ret < 0)
 		DMERR("Error in deleting previously created lbn pbn entry");
 
-#ifndef __INJECT_ERR_HANDLE_HAS_LBNPBN_DEC_REFCNT_ERRPATH_2__
-	ret	= dc->mdops->dec_refcount(dc->bmd, pbn_new);
-#else
-	ret = -EINJECTERR;
-#endif
+	ret = dc->mdops->dec_refcount(dc->bmd, pbn_new);
 	if (ret < 0)
 		DMERR("ERROR in decrementing previously incremented refcount.");
 out:
