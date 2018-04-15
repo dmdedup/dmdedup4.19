@@ -37,7 +37,6 @@
 #define DM_DEDUP_MAGIC 0x44447570 /* Hex value for "DDUP" */
 #define DM_DEDUP_VERSION 1
 #define SUPERBLOCK_CSUM_XOR 189575
-
 struct metadata {
 	struct dm_block_manager *meta_bm;
 	struct dm_transaction_manager *tm;
@@ -913,6 +912,7 @@ static int kvs_iterate_sparse_cowbtree(struct kvstore *kvs,
 	char *entry, *key, *value;
 	int r;
 	dm_block_t lowest, highest;
+
 	/*
 	 * For unit testing, we use dconfig to iterate over the
 	 * hash-pbn entries, and count is used to mark the second
@@ -921,6 +921,9 @@ static int kvs_iterate_sparse_cowbtree(struct kvstore *kvs,
 #ifdef __INJECT_ERROR__
 	struct dedup_config *dconfig;
 	int count = 0;
+	bool first = true;
+	char *next_entry;
+	u64 key_val;
 #endif
 
 	kvcbt = container_of(kvs, struct kvstore_cbt_sparse, ckvs);
@@ -968,12 +971,34 @@ static int kvs_iterate_sparse_cowbtree(struct kvstore *kvs,
 #ifdef __INJECT_ERROR__
 		if (memcmp(key, "xxxxxxxx", 8) == 0) {
 			DMWARN("iterate key: %s", key);
+
+			if (first) {
+				key_val = (*(uint64_t *)key);
+				first = false;
+			}
 			count++;
-			if (count == 2 || count == 4) {
+			key_val++;
+
+			if (count == 5) {
+				/*
+				 * Unit testing for the following scenario:
+				 * cur_entry = last entry in probe chain,
+				 * next_entry = entry not part of the chain.
+				 */
+				next_entry = kmalloc(kvcbt->entry_size,
+						     GFP_NOIO);
+				memset(next_entry, 1, kvcbt->entry_size);
+
+				DMINFO("##key val = %lld\n", key_val);
+				dm_btree_insert(&(kvcbt->info), kvcbt->root,
+						&key_val, next_entry,
+						&(kvcbt->root));
+			}
+			if (count % 2 == 0 || count == 5) {
 				dconfig = (struct dedup_config *)dc;
 				dconfig->kvs_hash_pbn->kvs_delete(
-						dconfig->kvs_hash_pbn,
-						(void *)key, kvs->ksize);
+					dconfig->kvs_hash_pbn, (void *)key,
+					kvs->ksize);
 				DMINFO("Deleted key: %s", key);
 			}
 		}
