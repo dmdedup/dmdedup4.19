@@ -702,6 +702,13 @@ badtree:
  *		Sparse KVS Functions			*
  ********************************************************/
 
+/*
+ * It deletes the exact entry whose keyval is provided as
+ * an input. No lookup is done here.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
 static int kvs_delete_entry(struct kvstore_cbt_sparse *kvcbt,
 			    char *cur_entry, char *next_entry,
 			    u64 cur_key_val, int ret_next)
@@ -716,7 +723,7 @@ static int kvs_delete_entry(struct kvstore_cbt_sparse *kvcbt,
 
 		r = dm_btree_insert(&(kvcbt->info), kvcbt->root,
 				    &cur_key_val, cur_entry, &(kvcbt->root));
-		DMINFO("Marked as tombstone for keyval = %lld", cur_key_val);
+		DMWARN("Marked as tombstone for keyval = %lld", cur_key_val);
 	} else {
 		/*
 		 * There is a next key and it is not a linearly probed one.
@@ -727,7 +734,7 @@ static int kvs_delete_entry(struct kvstore_cbt_sparse *kvcbt,
 				    kvcbt->root,
 				    &cur_key_val,
 				    &(kvcbt->root));
-		DMINFO("Performed actual deletion for keyval = %lld",
+		DMWARN("Performed actual deletion for keyval = %lld",
 		       cur_key_val);
 	}
 	return r;
@@ -738,7 +745,7 @@ static int kvs_delete_sparse_cowbtree(struct kvstore *kvs,
 {
 	char *cur_entry, *next_entry;
 	u64 key_val, cur_key_val;
-	int r, r1;
+	int r = 0, r1 = 0;
 	struct kvstore_cbt_sparse *kvcbt = NULL;
 
 	kvcbt = container_of(kvs, struct kvstore_cbt_sparse, ckvs);
@@ -757,7 +764,7 @@ static int kvs_delete_sparse_cowbtree(struct kvstore *kvs,
 	if (r == -ENODATA) {
 		return -ENODEV;
 	}
-	while (1) {
+	while (r1 == 0) {
 		cur_key_val = key_val;
 		key_val++;
 
@@ -773,7 +780,7 @@ static int kvs_delete_sparse_cowbtree(struct kvstore *kvs,
 			/* Key found. */
 			r = kvs_delete_entry(kvcbt, cur_entry, next_entry,
 					     cur_key_val, r1);
-			DMINFO("Deleted key successfully\n");
+			DMWARN("Deleted key successfully\n");
 			goto out;
 		} else if (r1 == 0) {
 			/* Key not found but there is a next key. */
