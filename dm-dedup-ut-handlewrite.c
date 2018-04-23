@@ -9,7 +9,6 @@
 #include "dm-dedup-cbt.h"
 #include "dm-dedup-kvstore.h"
 #include "dm-dedup-check.h"
-#include "dm-dedup-test-handlewrite.h"
 #include "dm-dedup-ut-handlewrite.h"
 
 /*
