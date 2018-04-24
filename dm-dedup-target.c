@@ -391,10 +391,11 @@ static int handle_write_no_hash(struct dedup_config *dc,
  * Returns 0 on success.
  */
 static int __handle_no_lbn_pbn_with_hash(struct dedup_config *dc,
-			      struct bio *bio, uint64_t lbn, u64 pbn_new,
-			      struct lbn_pbn_value lbnpbn_value)
+					 struct bio *bio, uint64_t lbn,
+					 u64 pbn_new,
+					 struct lbn_pbn_value lbnpbn_value)
 {
-	int r = 0;
+	int r = 0, ret;
 
 	/* Increments refcount of new pbn. */
 	r = dc->mdops->inc_refcount(dc->bmd, pbn_new);
@@ -414,16 +415,15 @@ static int __handle_no_lbn_pbn_with_hash(struct dedup_config *dc,
 
 	bio->bi_status = BLK_STS_OK;
 	bio_endio(bio);
+	dc->newwrites++;
 	goto out;
 
 kvs_insert_error:
 	/* Undo actions taken while incrementing refcount of new pbn. */
-	dc->mdops->dec_refcount(dc->bmd, pbn_new);
-
+	ret = dc->mdops->dec_refcount(dc->bmd, pbn_new);
+	if (ret < 0)
+		DMERR("Error in decrementing previously incremented refcount.");
 out:
-	if(r == 0)
-		dc->newwrites++;
-
 	return r;
 }
 
@@ -435,53 +435,63 @@ out:
  * Returns 0 on success.
  */
 static int __handle_has_lbn_pbn_with_hash(struct dedup_config *dc,
-				struct bio *bio, uint64_t lbn, u64 pbn_new,
-				struct lbn_pbn_value lbnpbn_value)
+					  struct bio *bio, uint64_t lbn,
+					  u64 this_pbn,
+					  struct lbn_pbn_value lbnpbn_value)
 {
-	int r = 0;
-	struct lbn_pbn_value new_lbnpbn_value;
+	int r = 0, ret;
+	struct lbn_pbn_value this_lbnpbn_value;
 	u64 pbn_old;
 
 	pbn_old = lbnpbn_value.pbn;
 
-	if (pbn_new != pbn_old) {
-		/* Increments refcount of new pbn. */
-		r = dc->mdops->inc_refcount(dc->bmd, pbn_new);
-		if (r < 0)
-			goto out;
-
-		new_lbnpbn_value.pbn = pbn_new;
-
-		/* Insert lbn->pbn_new entry. */
-		r = dc->kvs_lbn_pbn->kvs_insert(dc->kvs_lbn_pbn, (void *)&lbn,
-						sizeof(lbn),
-						(void *)&new_lbnpbn_value,
-						sizeof(new_lbnpbn_value));
-		if (r < 0)
-			goto kvs_insert_err;
-
-		/* Decrement refcount of old pbn. */
-		r = dc->mdops->dec_refcount(dc->bmd, pbn_old);
-		if (r < 0)
-			goto dec_refcount_err;
+	if (this_pbn == pbn_old) {
+		goto out;
 	}
 
-	bio->bi_status = BLK_STS_OK;
-	bio_endio(bio);
+	/* Increments refcount of new pbn. */
+	r = dc->mdops->inc_refcount(dc->bmd, this_pbn);
+	if (r < 0)
+		goto out;
+
+	this_lbnpbn_value.pbn = this_pbn;
+
+	/* Insert lbn->pbn_new entry. */
+	r = dc->kvs_lbn_pbn->kvs_insert(dc->kvs_lbn_pbn, (void *)&lbn,
+					sizeof(lbn),
+					(void *)&this_lbnpbn_value,
+					sizeof(this_lbnpbn_value));
+	if (r < 0)
+		goto kvs_insert_err;
+
+	/* Decrement refcount of old pbn. */
+	r = dc->mdops->dec_refcount(dc->bmd, pbn_old);
+	if (r < 0)
+		goto dec_refcount_err;
 
 	goto out;
 
 dec_refcount_err:
 	/* Undo actions taken while decrementing refcount of old pbn. */
-	dc->kvs_lbn_pbn->kvs_insert(dc->kvs_lbn_pbn, (void *)&lbn,
-				    sizeof(lbn), (void *)&lbnpbn_value,
-				    sizeof(lbnpbn_value));
+	/* Overwrite lbn->pbn_new entry with lbn->pbn_old entry. */
+	ret = dc->kvs_lbn_pbn->kvs_insert(dc->kvs_lbn_pbn, (void *)&lbn,
+				    	  sizeof(lbn), (void *)&lbnpbn_value,
+					  sizeof(lbnpbn_value));
+	if (ret < 0)
+		DMERR("Error in overwriting lbn->this_pbn [%llu] with"
+		      " lbn-pbn_old entry [%llu].", this_lbnpbn_value.pbn,
+		      lbnpbn_value.pbn);
 
 kvs_insert_err:
-	dc->mdops->dec_refcount(dc->bmd, pbn_new);
+	ret = dc->mdops->dec_refcount(dc->bmd, this_pbn);
+	if (ret < 0)
+		DMERR("Error in decrementing previously incremented refcount.");
 
 out:
-	if(r == 0)
+	bio->bi_status = BLK_STS_OK;
+	bio_endio(bio);
+
+	if (r == 0)
 		dc->overwrites++;
 
 	return r;
@@ -504,7 +514,7 @@ static int handle_write_with_hash(struct dedup_config *dc, struct bio *bio,
 
 	pbn_new = hashpbn_value.pbn;
 	r = dc->kvs_lbn_pbn->kvs_lookup(dc->kvs_lbn_pbn, (void *)&lbn,
-			sizeof(lbn), (void *)&lbnpbn_value, &vsize);
+					sizeof(lbn), (void *)&lbnpbn_value, &vsize);
 
 	if (r == -ENODATA) {
 		/* No LBN->PBN mapping entry */
