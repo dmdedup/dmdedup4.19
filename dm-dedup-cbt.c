@@ -745,7 +745,7 @@ static int kvs_delete_sparse_cowbtree(struct kvstore *kvs,
 {
 	char *cur_entry, *next_entry;
 	u64 key_val, cur_key_val;
-	int r = 0, r1 = 0;
+	int r = 0;
 	struct kvstore_cbt_sparse *kvcbt = NULL;
 
 	kvcbt = container_of(kvs, struct kvstore_cbt_sparse, ckvs);
@@ -764,7 +764,7 @@ static int kvs_delete_sparse_cowbtree(struct kvstore *kvs,
 	if (r == -ENODATA) {
 		return -ENODEV;
 	}
-	while (r1 == 0) {
+	while (r == 0) {
 		cur_key_val = key_val;
 		key_val++;
 
@@ -772,25 +772,23 @@ static int kvs_delete_sparse_cowbtree(struct kvstore *kvs,
 		if (!next_entry)
 			return -ENOMEM;
 
-		r1 = dm_btree_lookup(&(kvcbt->info),
+		r = dm_btree_lookup(&(kvcbt->info),
 				     kvcbt->root,
 				     &key_val, next_entry);
 
 		if (!memcmp(cur_entry, key, ksize)) {
 			/* Key found. */
 			r = kvs_delete_entry(kvcbt, cur_entry, next_entry,
-					     cur_key_val, r1);
+					     cur_key_val, r);
 			DMWARN("Deleted key successfully\n");
 			goto out;
-		} else if (r1 == 0) {
+		} else if (r == 0) {
 			/* Key not found but there is a next key. */
 			cur_entry = next_entry;
 		} else {
 			break;
 		}
 	}
-	/* Key not found and there is no next key, update return value. */
-	r = r1;
 out:
 	kfree(cur_entry);
 	kfree(next_entry);
