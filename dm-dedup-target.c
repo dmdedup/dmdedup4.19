@@ -384,6 +384,110 @@ static int handle_write_no_hash(struct dedup_config *dc,
 }
 
 /*
+ * Internal function to handle write when hash-pbn entry is present,
+ * but lbn-pbn entry is not present.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
+static int __handle_no_lbn_pbn_with_hash(struct dedup_config *dc,
+			      struct bio *bio, uint64_t lbn, u64 pbn_new,
+			      struct lbn_pbn_value lbnpbn_value)
+{
+	int r = 0;
+
+	/* Increments refcount of new pbn. */
+	r = dc->mdops->inc_refcount(dc->bmd, pbn_new);
+	if (r < 0)
+		goto out;
+
+	lbnpbn_value.pbn = pbn_new;
+
+	/* Insert lbn->pbn_new entry. */
+	r = dc->kvs_lbn_pbn->kvs_insert(dc->kvs_lbn_pbn, (void *)&lbn,
+					sizeof(lbn), (void *)&lbnpbn_value,
+					sizeof(lbnpbn_value));
+	if (r < 0)
+		goto kvs_insert_error;
+
+	dc->logical_block_counter++;
+
+	bio->bi_status = BLK_STS_OK;
+	bio_endio(bio);
+	goto out;
+
+kvs_insert_error:
+	/* Undo actions taken while incrementing refcount of new pbn. */
+	dc->mdops->dec_refcount(dc->bmd, pbn_new);
+
+out:
+	if(r == 0)
+		dc->newwrites++;
+
+	return r;
+}
+
+/*
+ * Internal function to handle write when both hash-pbn entry and lbn-pbn
+ * entry is present.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
+static int __handle_has_lbn_pbn_with_hash(struct dedup_config *dc,
+				struct bio *bio, uint64_t lbn, u64 pbn_new,
+				struct lbn_pbn_value lbnpbn_value)
+{
+	int r = 0;
+	struct lbn_pbn_value new_lbnpbn_value;
+	u64 pbn_old;
+
+	pbn_old = lbnpbn_value.pbn;
+
+	if (pbn_new != pbn_old) {
+		/* Increments refcount of new pbn. */
+		r = dc->mdops->inc_refcount(dc->bmd, pbn_new);
+		if (r < 0)
+			goto out;
+
+		new_lbnpbn_value.pbn = pbn_new;
+
+		/* Insert lbn->pbn_new entry. */
+		r = dc->kvs_lbn_pbn->kvs_insert(dc->kvs_lbn_pbn, (void *)&lbn,
+						sizeof(lbn),
+						(void *)&new_lbnpbn_value,
+						sizeof(new_lbnpbn_value));
+		if (r < 0)
+			goto kvs_insert_err;
+
+		/* Decrement refcount of old pbn. */
+		r = dc->mdops->dec_refcount(dc->bmd, pbn_old);
+		if (r < 0)
+			goto dec_refcount_err;
+	}
+
+	bio->bi_status = BLK_STS_OK;
+	bio_endio(bio);
+
+	goto out;
+
+dec_refcount_err:
+	/* Undo actions taken while decrementing refcount of old pbn. */
+	dc->kvs_lbn_pbn->kvs_insert(dc->kvs_lbn_pbn, (void *)&lbn,
+				    sizeof(lbn), (void *)&lbnpbn_value,
+				    sizeof(lbnpbn_value));
+
+kvs_insert_err:
+	dc->mdops->dec_refcount(dc->bmd, pbn_new);
+
+out:
+	if(r == 0)
+		dc->overwrites++;
+
+	return r;
+}
+
+/*
  * Handles write io when Hash->PBN entry is found.
  *
  * Returns -ERR code in failure.
@@ -395,90 +499,24 @@ static int handle_write_with_hash(struct dedup_config *dc, struct bio *bio,
 {
 	int r;
 	u32 vsize;
-	u64 pbn_new, pbn_old;
 	struct lbn_pbn_value lbnpbn_value;
-	struct lbn_pbn_value new_lbnpbn_value;
-
-	dc->dupwrites++;
+	u64 pbn_new;
 
 	pbn_new = hashpbn_value.pbn;
 	r = dc->kvs_lbn_pbn->kvs_lookup(dc->kvs_lbn_pbn, (void *)&lbn,
 			sizeof(lbn), (void *)&lbnpbn_value, &vsize);
+
 	if (r == -ENODATA) {
 		/* No LBN->PBN mapping entry */
-		dc->newwrites++;
-
-		r = dc->mdops->inc_refcount(dc->bmd, pbn_new);
-		if (r < 0)
-			goto out_inc_refcount_1;
-
-		lbnpbn_value.pbn = pbn_new;
-
-		r = dc->kvs_lbn_pbn->kvs_insert(dc->kvs_lbn_pbn, (void *)&lbn,
-				sizeof(lbn), (void *)&lbnpbn_value,
-				sizeof(lbnpbn_value));
-		if (r < 0)
-			goto out_kvs_insert_1;
-
-		dc->logical_block_counter++;
-
-		goto out_1;
-
-out_kvs_insert_1:
-		dc->mdops->dec_refcount(dc->bmd, pbn_new);
-out_inc_refcount_1:
-		dc->newwrites--;
-out_1:
-		if (r >= 0) {
-			bio->bi_status = BLK_STS_OK;
-			bio_endio(bio);
-		} else {
-			dc->dupwrites--;
-		}
-		return r;
-	} else if (r < 0) {
-		goto out_2;
+		r = __handle_no_lbn_pbn_with_hash(dc, bio, lbn, pbn_new,
+						lbnpbn_value);
+	} else if (r == 0) {
+		/* LBN->PBN mapping entry exists */
+		r = __handle_has_lbn_pbn_with_hash(dc, bio, lbn, pbn_new,
+						   lbnpbn_value);
 	}
-
-	/* LBN->PBN mapping entry exists */
-	dc->overwrites++;
-	pbn_old = lbnpbn_value.pbn;
-	if (pbn_new != pbn_old) {
-		r = dc->mdops->inc_refcount(dc->bmd, pbn_new);
-		if (r < 0)
-			goto out_inc_refcount_2;
-
-		new_lbnpbn_value.pbn = pbn_new;
-
-		r = dc->kvs_lbn_pbn->kvs_insert(dc->kvs_lbn_pbn, (void *)&lbn,
-			sizeof(lbn), (void *)&new_lbnpbn_value,
-			sizeof(new_lbnpbn_value));
-		if (r < 0)
-			goto out_kvs_insert_2;
-
-		r = dc->mdops->dec_refcount(dc->bmd, pbn_old);
-		if (r < 0)
-			goto out_dec_refcount_2;
-	}
-
-	/* Nothing to do if writing same data to same LBN */
-	goto out_2;
-
-out_dec_refcount_2:
-	dc->kvs_lbn_pbn->kvs_insert(dc->kvs_lbn_pbn, (void *)&lbn,
-			sizeof(lbn), (void *)&lbnpbn_value,
-			sizeof(lbnpbn_value));
-out_kvs_insert_2:
-	dc->mdops->dec_refcount(dc->bmd, pbn_new);
-out_inc_refcount_2:
-	dc->overwrites--;
-out_2:
-	if (r >= 0) {
-		bio->bi_status = BLK_STS_OK;
-		bio_endio(bio);
-	} else {
-		dc->dupwrites--;
-	}
+	if (r == 0)
+		dc->dupwrites++;
 	return r;
 }
 
