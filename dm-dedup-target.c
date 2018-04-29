@@ -392,19 +392,19 @@ static int handle_write_no_hash(struct dedup_config *dc,
  */
 static int __handle_no_lbn_pbn_with_hash(struct dedup_config *dc,
 					 struct bio *bio, uint64_t lbn,
-					 u64 pbn_new,
+					 u64 pbn_this,
 					 struct lbn_pbn_value lbnpbn_value)
 {
 	int r = 0, ret;
 
-	/* Increments refcount of new pbn. */
-	r = dc->mdops->inc_refcount(dc->bmd, pbn_new);
+	/* Increments refcount of this passed pbn */
+	r = dc->mdops->inc_refcount(dc->bmd, pbn_this);
 	if (r < 0)
 		goto out;
 
-	lbnpbn_value.pbn = pbn_new;
+	lbnpbn_value.pbn = pbn_this;
 
-	/* Insert lbn->pbn_new entry. */
+	/* Insert lbn->pbn_this entry */
 	r = dc->kvs_lbn_pbn->kvs_insert(dc->kvs_lbn_pbn, (void *)&lbn,
 					sizeof(lbn), (void *)&lbnpbn_value,
 					sizeof(lbnpbn_value));
@@ -419,8 +419,8 @@ static int __handle_no_lbn_pbn_with_hash(struct dedup_config *dc,
 	goto out;
 
 kvs_insert_error:
-	/* Undo actions taken while incrementing refcount of new pbn. */
-	ret = dc->mdops->dec_refcount(dc->bmd, pbn_new);
+	/* Undo actions taken while incrementing refcount of this pbn. */
+	ret = dc->mdops->dec_refcount(dc->bmd, pbn_this);
 	if (ret < 0)
 		DMERR("Error in decrementing previously incremented refcount.");
 out:
@@ -436,7 +436,7 @@ out:
  */
 static int __handle_has_lbn_pbn_with_hash(struct dedup_config *dc,
 					  struct bio *bio, uint64_t lbn,
-					  u64 this_pbn,
+					  u64 pbn_this,
 					  struct lbn_pbn_value lbnpbn_value)
 {
 	int r = 0, ret;
@@ -445,18 +445,18 @@ static int __handle_has_lbn_pbn_with_hash(struct dedup_config *dc,
 
 	pbn_old = lbnpbn_value.pbn;
 
-	if (this_pbn == pbn_old) {
+	/* special case, overwrite same LBN/PBN with same data */
+	if (pbn_this == pbn_old)
 		goto out;
-	}
 
-	/* Increments refcount of new pbn. */
-	r = dc->mdops->inc_refcount(dc->bmd, this_pbn);
+	/* Increments refcount of this passed pbn */
+	r = dc->mdops->inc_refcount(dc->bmd, pbn_this);
 	if (r < 0)
 		goto out;
 
-	this_lbnpbn_value.pbn = this_pbn;
+	this_lbnpbn_value.pbn = pbn_this;
 
-	/* Insert lbn->pbn_new entry. */
+	/* Insert lbn->pbn_this entry */
 	r = dc->kvs_lbn_pbn->kvs_insert(dc->kvs_lbn_pbn, (void *)&lbn,
 					sizeof(lbn),
 					(void *)&this_lbnpbn_value,
@@ -464,35 +464,34 @@ static int __handle_has_lbn_pbn_with_hash(struct dedup_config *dc,
 	if (r < 0)
 		goto kvs_insert_err;
 
-	/* Decrement refcount of old pbn. */
+	/* Decrement refcount of old pbn */
 	r = dc->mdops->dec_refcount(dc->bmd, pbn_old);
 	if (r < 0)
 		goto dec_refcount_err;
 
-	goto out;
+	goto out;	/* all OK */
 
 dec_refcount_err:
-	/* Undo actions taken while decrementing refcount of old pbn. */
-	/* Overwrite lbn->pbn_new entry with lbn->pbn_old entry. */
+	/* Undo actions taken while decrementing refcount of old pbn */
+	/* Overwrite lbn->pbn_this entry with lbn->pbn_old entry */
 	ret = dc->kvs_lbn_pbn->kvs_insert(dc->kvs_lbn_pbn, (void *)&lbn,
 				    	  sizeof(lbn), (void *)&lbnpbn_value,
 					  sizeof(lbnpbn_value));
 	if (ret < 0)
-		DMERR("Error in overwriting lbn->this_pbn [%llu] with"
+		DMERR("Error in overwriting lbn->pbn_this [%llu] with"
 		      " lbn-pbn_old entry [%llu].", this_lbnpbn_value.pbn,
 		      lbnpbn_value.pbn);
 
 kvs_insert_err:
-	ret = dc->mdops->dec_refcount(dc->bmd, this_pbn);
+	ret = dc->mdops->dec_refcount(dc->bmd, pbn_this);
 	if (ret < 0)
 		DMERR("Error in decrementing previously incremented refcount.");
-
 out:
-	bio->bi_status = BLK_STS_OK;
-	bio_endio(bio);
-
-	if (r == 0)
+	if (r == 0) {
+		bio->bi_status = BLK_STS_OK;
+		bio_endio(bio);
 		dc->overwrites++;
+	}
 
 	return r;
 }
@@ -510,19 +509,19 @@ static int handle_write_with_hash(struct dedup_config *dc, struct bio *bio,
 	int r;
 	u32 vsize;
 	struct lbn_pbn_value lbnpbn_value;
-	u64 pbn_new;
+	u64 pbn_this;
 
-	pbn_new = hashpbn_value.pbn;
+	pbn_this = hashpbn_value.pbn;
 	r = dc->kvs_lbn_pbn->kvs_lookup(dc->kvs_lbn_pbn, (void *)&lbn,
 					sizeof(lbn), (void *)&lbnpbn_value, &vsize);
 
 	if (r == -ENODATA) {
 		/* No LBN->PBN mapping entry */
-		r = __handle_no_lbn_pbn_with_hash(dc, bio, lbn, pbn_new,
-						lbnpbn_value);
+		r = __handle_no_lbn_pbn_with_hash(dc, bio, lbn, pbn_this,
+						  lbnpbn_value);
 	} else if (r == 0) {
 		/* LBN->PBN mapping entry exists */
-		r = __handle_has_lbn_pbn_with_hash(dc, bio, lbn, pbn_new,
+		r = __handle_has_lbn_pbn_with_hash(dc, bio, lbn, pbn_this,
 						   lbnpbn_value);
 	}
 	if (r == 0)
