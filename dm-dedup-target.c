@@ -617,21 +617,21 @@ static void process_bio(struct dedup_config *dc, struct bio *bio)
 	}
 
 	if (r < 0) {
-		switch (-1*r) {
-		case EWOULDBLOCK:
+		switch (r) {
+		case -EWOULDBLOCK:
 			bio->bi_status = BLK_STS_AGAIN;
 			break;
-		case EINVAL:
-		case EIO:
+		case -EINVAL:
+		case -EIO:
 			bio->bi_status = BLK_STS_IOERR;
 			break;
-		case ENODATA:
+		case -ENODATA:
 			bio->bi_status = BLK_STS_MEDIUM;
 			break;
-		case ENOMEM:
+		case -ENOMEM:
 			bio->bi_status = BLK_STS_RESOURCE;
 			break;
-		case EPERM:
+		case -EPERM:
 			bio->bi_status = BLK_STS_PROTECTION;
 			break;
 		}
