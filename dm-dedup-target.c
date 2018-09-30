@@ -24,6 +24,7 @@
 #include "dm-dedup-cbt.h"
 #include "dm-dedup-kvstore.h"
 #include "dm-dedup-check.h"
+#include "dm-dedup-ut-handlewrite.h"
 
 #define MAX_DEV_NAME_LEN (64)
 
@@ -52,6 +53,7 @@ enum backend {
 	BKND_COWBTREE
 };
 
+/* Initializes bio. */
 static void bio_zero_endio(struct bio *bio)
 {
 	zero_fill_bio(bio);
@@ -59,6 +61,7 @@ static void bio_zero_endio(struct bio *bio)
 	bio_endio(bio);
 }
 
+/* Returns the logical block number for the bio. */
 static uint64_t bio_lbn(struct dedup_config *dc, struct bio *bio)
 {
 	sector_t lbn = bio->bi_iter.bi_sector;
@@ -68,12 +71,17 @@ static uint64_t bio_lbn(struct dedup_config *dc, struct bio *bio)
 	return lbn;
 }
 
+/* Entry point to the generic block layer. */
 static void do_io_remap_device(struct dedup_config *dc, struct bio *bio)
 {
 	bio->bi_bdev = dc->data_dev->bdev;
 	generic_make_request(bio);
 }
 
+/*
+ * Updates the sector indice, given the pbn and offset calculation, and
+ * enters the generic block layer.
+ */
 static void do_io(struct dedup_config *dc, struct bio *bio, uint64_t pbn)
 {
 	int offset;
@@ -84,6 +92,14 @@ static void do_io(struct dedup_config *dc, struct bio *bio, uint64_t pbn)
 	do_io_remap_device(dc, bio);
 }
 
+/*
+ * Gets the pbn from the LBN->PBN entry and performs io request.
+ * If corruption check is enabled, it prepares the check_io
+ * structure for FEC and then performs io request.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
 static int handle_read(struct dedup_config *dc, struct bio *bio)
 {
 	u64 lbn;
@@ -95,18 +111,16 @@ static int handle_read(struct dedup_config *dc, struct bio *bio)
 
 	lbn = bio_lbn(dc, bio);
 
-	
 	/* get the pbn in LBN->PBN store for incoming lbn */
 	r = dc->kvs_lbn_pbn->kvs_lookup(dc->kvs_lbn_pbn, (void *)&lbn,
 			sizeof(lbn), (void *)&lbnpbn_value, &vsize);
 
-	if (r == 0) { 
+	if (r == -ENODATA) {
 		/* unable to find the entry in LBN->PBN store */
-		
 		bio_zero_endio(bio);
-	} else if (r == 1) { 
+	} else if (r == 0) {
 		/* entry found in the LBN->PBN store */
-		
+
 		/* if corruption check not enabled directly do io request */
 		if (!dc->check_corruption) {
 			clone = bio;
@@ -120,22 +134,22 @@ static int handle_read(struct dedup_config *dc, struct bio *bio)
 		io->lbn = lbn;
 		io->base_bio = bio;
 
-		/* 
- 		 * Prepare bio clone to handle disk read
- 		 * clone is created so that we can have our own endio 
- 		 * where we call bio_endio on original bio 
- 		 * after corruption checks are done
- 		 */
+		/*
+		 * Prepare bio clone to handle disk read
+		 * clone is created so that we can have our own endio
+		 * where we call bio_endio on original bio
+		 * after corruption checks are done
+		 */
 		clone = bio_clone_fast(bio, GFP_NOIO, dc->bs);
 		if (!clone) {
 			r = -ENOMEM;
 			goto out_clone_fail;
 		}
 
-		/* 
- 		 * Store the check_io structure in bio's private field
- 		 * used as indirect argument when disk read is finished
- 		 */
+		/*
+		 * Store the check_io structure in bio's private field
+		 * used as indirect argument when disk read is finished
+		 */
 		clone->bi_end_io = dedup_check_endio;
 		clone->bi_private = io;
 
@@ -156,7 +170,14 @@ out:
 
 }
 
-static int allocate_block(struct dedup_config *dc, uint64_t *pbn_new)
+/*
+ * Allocates pbn_new and increments the logical and physical block
+ * counters. Note that it also increments refcount internally.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
+int allocate_block(struct dedup_config *dc, uint64_t *pbn_new)
 {
 	int r;
 
@@ -170,13 +191,21 @@ static int allocate_block(struct dedup_config *dc, uint64_t *pbn_new)
 	return r;
 }
 
-static int write_to_new_block(struct dedup_config *dc, uint64_t *pbn_new,
-			      struct bio *bio, uint64_t lbn)
+/*
+ * Allocates pbn_new and performs write io.
+ * Inserts the new LBN->PBN entry.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
+static int alloc_pbnblk_and_insert_lbn_pbn(struct dedup_config *dc,
+					   u64 *pbn_new,
+					   struct bio *bio, uint64_t lbn)
 {
 	int r = 0;
 	struct lbn_pbn_value lbnpbn_value;
 
-	r = allocate_block(dc, pbn_new);
+	r = GLUE(INJECT_ERR_STR, allocate_block)(dc, pbn_new);
 	if (r < 0) {
 		r = -EIO;
 		return r;
@@ -186,203 +215,328 @@ static int write_to_new_block(struct dedup_config *dc, uint64_t *pbn_new,
 	do_io(dc, bio, *pbn_new);
 
 	r = dc->kvs_lbn_pbn->kvs_insert(dc->kvs_lbn_pbn, (void *)&lbn,
-		sizeof(lbn), (void *)&lbnpbn_value, sizeof(lbnpbn_value));
+					sizeof(lbn), (void *)&lbnpbn_value,
+					sizeof(lbnpbn_value));
 	if (r < 0)
 		dc->mdops->dec_refcount(dc->bmd, *pbn_new);
 
 	return r;
 }
 
+/*
+ * Internal function to handle write when lbn-pbn entry is not
+ * present. It creates a new lbn-pbn mapping and insert given
+ * hash for this new pbn in hash-pbn mapping. Then increments
+ * refcount for this new pbn.
+ *
+ * Returns -ERR code on failure.
+ * Returns 0 on success.
+ */
+static int __handle_no_lbn_pbn(struct dedup_config *dc,
+			       struct bio *bio, uint64_t lbn, u8 *hash)
+{
+	int r, ret;
+	u64 pbn_new;
+	struct hash_pbn_value hashpbn_value;
+
+	/* Create a new lbn-pbn mapping for given lbn */
+	r = alloc_pbnblk_and_insert_lbn_pbn(dc, &pbn_new, bio, lbn);
+	if (r < 0)
+		goto out;
+
+	/* Inserts new hash-pbn mapping for given hash. */
+	hashpbn_value.pbn = pbn_new;
+	r = dc->kvs_hash_pbn->kvs_insert(dc->kvs_hash_pbn, (void *)hash,
+					 dc->crypto_key_size,
+					 (void *)&hashpbn_value,
+					 sizeof(hashpbn_value));
+	if (r < 0)
+		goto kvs_insert_err;
+
+	/* Increments refcount for new pbn entry created. */
+	r = dc->mdops->inc_refcount(dc->bmd, pbn_new);
+	if (r < 0)
+		goto inc_refcount_err;
+
+	/* On all successful steps increment new write count. */
+	dc->newwrites++;
+	goto out;
+
+/* Error handling code path */
+inc_refcount_err:
+	/* Undo actions taken in hash-pbn kvs insert. */
+	ret = dc->kvs_hash_pbn->kvs_delete(dc->kvs_hash_pbn,
+					   (void *)hash, dc->crypto_key_size);
+	if (ret < 0)
+		DMERR("Error in deleting previously created hash pbn entry.");
+kvs_insert_err:
+	/* Undo actions taken in alloc_pbnblk_and_insert_lbn_pbn. */
+	ret = dc->kvs_lbn_pbn->kvs_delete(dc->kvs_lbn_pbn,
+					  (void *)&lbn, sizeof(lbn));
+	if (ret < 0)
+		DMERR("Error in deleting previously created lbn pbn entry.");
+	ret = dc->mdops->dec_refcount(dc->bmd, pbn_new);
+	if (ret < 0)
+		DMERR("ERROR in decrementing previously incremented refcount.");
+out:
+	return r;
+}
+
+/*
+ * Internal function to handle write when lbn-pbn mapping is present.
+ * It creates a block for new pbn and inserts lbn-pbn(new) mapping.
+ * Decrements old pbn refcount and inserts new hash-pbn entry followed
+ * by incrementing refcount of new pbn.
+ *
+ * Returns -ERR code on failure.
+ * Returns 0 on success.
+ */
+static int __handle_has_lbn_pbn(struct dedup_config *dc,
+				struct bio *bio, uint64_t lbn, u8 *hash,
+				u64 pbn_old)
+{
+	int r, ret;
+	u64 pbn_new;
+	struct hash_pbn_value hashpbn_value;
+
+	/* Allocates a new block for new pbn and inserts lbn-pbn lapping. */
+	r = alloc_pbnblk_and_insert_lbn_pbn(dc, &pbn_new, bio, lbn);
+	if (r < 0)
+		goto out;
+
+	/* Inserts new hash-pbn entry for given hash. */
+	hashpbn_value.pbn = pbn_new;
+	r = dc->kvs_hash_pbn->kvs_insert(dc->kvs_hash_pbn, (void *)hash,
+					 dc->crypto_key_size,
+					 (void *)&hashpbn_value,
+					 sizeof(hashpbn_value));
+	if (r < 0)
+		goto kvs_insert_err;
+
+	/* Increments refcount of new pbn. */
+	r = dc->mdops->inc_refcount(dc->bmd, pbn_new);
+	if (r < 0)
+		goto inc_refcount_err;
+
+	/* Decrements refcount for old pbn and decrement logical block cnt. */
+	r = dc->mdops->dec_refcount(dc->bmd, pbn_old);
+	if (r < 0)
+		goto dec_refcount_err;
+	dc->logical_block_counter--;
+
+	/* On all successful steps increment overwrite count. */
+	dc->overwrites++;
+	goto out;
+
+/* Error handling code path. */
+dec_refcount_err:
+	/* Undo actions taken while incrementing refcount of new pbn. */
+	ret = dc->mdops->dec_refcount(dc->bmd, pbn_new);
+	if (ret < 0)
+		DMERR("Error in decrementing previously incremented refcount.");
+
+inc_refcount_err:
+	ret = dc->kvs_hash_pbn->kvs_delete(dc->kvs_hash_pbn, (void *)hash,
+					   dc->crypto_key_size);
+	if (ret < 0)
+		DMERR("Error in deleting previously inserted hash pbn entry");
+
+kvs_insert_err:
+	/* Undo actions taken in alloc_pbnblk_and_insert_lbn_pbn. */
+	ret = dc->kvs_lbn_pbn->kvs_delete(dc->kvs_lbn_pbn, (void *)&lbn,
+					  sizeof(lbn));
+	if (ret < 0)
+		DMERR("Error in deleting previously created lbn pbn entry");
+
+	ret = dc->mdops->dec_refcount(dc->bmd, pbn_new);
+	if (ret < 0)
+		DMERR("ERROR in decrementing previously incremented refcount.");
+out:
+	return r;
+}
+
+/*
+ * Handles write io when Hash->PBN entry is not found.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
 static int handle_write_no_hash(struct dedup_config *dc,
 				struct bio *bio, uint64_t lbn, u8 *hash)
 {
 	int r;
 	u32 vsize;
-	u64 pbn_new, pbn_old;
 	struct lbn_pbn_value lbnpbn_value;
-	struct hash_pbn_value hashpbn_value;
-
-	dc->uniqwrites++;
 
 	r = dc->kvs_lbn_pbn->kvs_lookup(dc->kvs_lbn_pbn, (void *)&lbn,
-			sizeof(lbn), (void *)&lbnpbn_value, &vsize);
-	if (r == 0) {
+					sizeof(lbn), (void *)&lbnpbn_value,
+					&vsize);
+	if (r == -ENODATA) {
 		/* No LBN->PBN mapping entry */
-		dc->newwrites++;
-		r = write_to_new_block(dc, &pbn_new, bio, lbn);
-		if (r < 0)
-			goto out_write_new_block_1;
-
-		hashpbn_value.pbn = pbn_new;
-
-		r = dc->kvs_hash_pbn->kvs_insert(dc->kvs_hash_pbn, (void *)hash,
-				dc->crypto_key_size, (void *)&hashpbn_value,
-				sizeof(hashpbn_value));
-		if (r < 0)
-			goto out_kvs_insert_1;
-
-		r = dc->mdops->inc_refcount(dc->bmd, pbn_new);
-		if (r < 0)
-			goto out_inc_refcount_1;
-
-		goto out_1;
-
-out_inc_refcount_1:
-		dc->kvs_hash_pbn->kvs_delete(dc->kvs_hash_pbn,
-				(void *)hash, dc->crypto_key_size);
-out_kvs_insert_1:
-		dc->kvs_lbn_pbn->kvs_delete(dc->kvs_lbn_pbn,
-				(void *)&lbn, sizeof(lbn));
-		dc->mdops->dec_refcount(dc->bmd, pbn_new);
-out_write_new_block_1:
-		dc->newwrites--;
-out_1:
-		if (r < 0)
-			dc->uniqwrites--;
-		return r;
-	} else if (r < 0) {
-		goto out_2;
+		r = __handle_no_lbn_pbn(dc, bio, lbn, hash);
+	} else if (r == 0) {
+		/* LBN->PBN mappings exist */
+		r = __handle_has_lbn_pbn(dc, bio, lbn, hash, lbnpbn_value.pbn);
 	}
-
-	/* LBN->PBN mappings exist */
-	dc->overwrites++;
-	r = write_to_new_block(dc, &pbn_new, bio, lbn);
-	if (r < 0)
-		goto out_write_new_block_2;
-
-	pbn_old = lbnpbn_value.pbn;
-	r = dc->mdops->dec_refcount(dc->bmd, pbn_old);
-	if (r < 0)
-		goto out_dec_refcount_2;
-
-	dc->logical_block_counter--;
-
-	hashpbn_value.pbn = pbn_new;
-
-	r = dc->kvs_hash_pbn->kvs_insert(dc->kvs_hash_pbn, (void *)hash,
-				dc->crypto_key_size, (void *)&hashpbn_value,
-				sizeof(hashpbn_value));
-	if (r < 0)
-		goto out_kvs_insert_2;
-
-	r = dc->mdops->inc_refcount(dc->bmd, pbn_new);
-	if (r < 0)
-		goto out_inc_refcount_2;
-
-	goto out_2;
-
-out_inc_refcount_2:
-	dc->kvs_hash_pbn->kvs_delete(dc->kvs_hash_pbn,
-			(void *)hash, dc->crypto_key_size);
-out_kvs_insert_2:
-	dc->logical_block_counter++;
-	dc->mdops->inc_refcount(dc->bmd, pbn_old);
-out_dec_refcount_2:
-	dc->kvs_lbn_pbn->kvs_insert(dc->kvs_lbn_pbn, (void *)&lbn,
-			sizeof(lbn), (void *)&lbnpbn_value,
-			sizeof(lbnpbn_value));
-	dc->mdops->dec_refcount(dc->bmd, pbn_new);
-out_write_new_block_2:
-	dc->overwrites--;
-out_2:
-	if (r < 0)
-		dc->uniqwrites--;
+	if (r == 0)
+		dc->uniqwrites++;
 	return r;
 }
 
+/*
+ * Internal function to handle write when hash-pbn entry is present,
+ * but lbn-pbn entry is not present.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
+static int __handle_no_lbn_pbn_with_hash(struct dedup_config *dc,
+					 struct bio *bio, uint64_t lbn,
+					 u64 pbn_this,
+					 struct lbn_pbn_value lbnpbn_value)
+{
+	int r = 0, ret;
+
+	/* Increments refcount of this passed pbn */
+	r = dc->mdops->inc_refcount(dc->bmd, pbn_this);
+	if (r < 0)
+		goto out;
+
+	lbnpbn_value.pbn = pbn_this;
+
+	/* Insert lbn->pbn_this entry */
+	r = dc->kvs_lbn_pbn->kvs_insert(dc->kvs_lbn_pbn, (void *)&lbn,
+					sizeof(lbn), (void *)&lbnpbn_value,
+					sizeof(lbnpbn_value));
+	if (r < 0)
+		goto kvs_insert_error;
+
+	dc->logical_block_counter++;
+
+	bio->bi_status = BLK_STS_OK;
+	bio_endio(bio);
+	dc->newwrites++;
+	goto out;
+
+kvs_insert_error:
+	/* Undo actions taken while incrementing refcount of this pbn. */
+	ret = dc->mdops->dec_refcount(dc->bmd, pbn_this);
+	if (ret < 0)
+		DMERR("Error in decrementing previously incremented refcount.");
+out:
+	return r;
+}
+
+/*
+ * Internal function to handle write when both hash-pbn entry and lbn-pbn
+ * entry is present.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
+static int __handle_has_lbn_pbn_with_hash(struct dedup_config *dc,
+					  struct bio *bio, uint64_t lbn,
+					  u64 pbn_this,
+					  struct lbn_pbn_value lbnpbn_value)
+{
+	int r = 0, ret;
+	struct lbn_pbn_value this_lbnpbn_value;
+	u64 pbn_old;
+
+	pbn_old = lbnpbn_value.pbn;
+
+	/* special case, overwrite same LBN/PBN with same data */
+	if (pbn_this == pbn_old)
+		goto out;
+
+	/* Increments refcount of this passed pbn */
+	r = dc->mdops->inc_refcount(dc->bmd, pbn_this);
+	if (r < 0)
+		goto out;
+
+	this_lbnpbn_value.pbn = pbn_this;
+
+	/* Insert lbn->pbn_this entry */
+	r = dc->kvs_lbn_pbn->kvs_insert(dc->kvs_lbn_pbn, (void *)&lbn,
+					sizeof(lbn),
+					(void *)&this_lbnpbn_value,
+					sizeof(this_lbnpbn_value));
+	if (r < 0)
+		goto kvs_insert_err;
+
+	/* Decrement refcount of old pbn */
+	r = dc->mdops->dec_refcount(dc->bmd, pbn_old);
+	if (r < 0)
+		goto dec_refcount_err;
+
+	goto out;	/* all OK */
+
+dec_refcount_err:
+	/* Undo actions taken while decrementing refcount of old pbn */
+	/* Overwrite lbn->pbn_this entry with lbn->pbn_old entry */
+	ret = dc->kvs_lbn_pbn->kvs_insert(dc->kvs_lbn_pbn, (void *)&lbn,
+				    	  sizeof(lbn), (void *)&lbnpbn_value,
+					  sizeof(lbnpbn_value));
+	if (ret < 0)
+		DMERR("Error in overwriting lbn->pbn_this [%llu] with"
+		      " lbn-pbn_old entry [%llu].", this_lbnpbn_value.pbn,
+		      lbnpbn_value.pbn);
+
+kvs_insert_err:
+	ret = dc->mdops->dec_refcount(dc->bmd, pbn_this);
+	if (ret < 0)
+		DMERR("Error in decrementing previously incremented refcount.");
+out:
+	if (r == 0) {
+		bio->bi_status = BLK_STS_OK;
+		bio_endio(bio);
+		dc->overwrites++;
+	}
+
+	return r;
+}
+
+/*
+ * Handles write io when Hash->PBN entry is found.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
 static int handle_write_with_hash(struct dedup_config *dc, struct bio *bio,
 				  u64 lbn, u8 *final_hash,
 				  struct hash_pbn_value hashpbn_value)
 {
 	int r;
 	u32 vsize;
-	u64 pbn_new, pbn_old;
 	struct lbn_pbn_value lbnpbn_value;
-	struct lbn_pbn_value new_lbnpbn_value;
+	u64 pbn_this;
 
-	dc->dupwrites++;
-
-	pbn_new = hashpbn_value.pbn;
+	pbn_this = hashpbn_value.pbn;
 	r = dc->kvs_lbn_pbn->kvs_lookup(dc->kvs_lbn_pbn, (void *)&lbn,
-			sizeof(lbn), (void *)&lbnpbn_value, &vsize);
-	if (r == 0) {
+					sizeof(lbn), (void *)&lbnpbn_value, &vsize);
+
+	if (r == -ENODATA) {
 		/* No LBN->PBN mapping entry */
-		dc->newwrites++;
-
-		r = dc->mdops->inc_refcount(dc->bmd, pbn_new);
-		if (r < 0)
-			goto out_inc_refcount_1;
-
-		lbnpbn_value.pbn = pbn_new;
-
-		r = dc->kvs_lbn_pbn->kvs_insert(dc->kvs_lbn_pbn, (void *)&lbn,
-				sizeof(lbn), (void *)&lbnpbn_value,
-				sizeof(lbnpbn_value));
-		if (r < 0)
-			goto out_kvs_insert_1;
-
-		dc->logical_block_counter++;
-
-		goto out_1;
-
-out_kvs_insert_1:
-		dc->mdops->dec_refcount(dc->bmd, pbn_new);
-out_inc_refcount_1:
-		dc->newwrites--;
-out_1:
-		if (r >= 0) {
-			bio->bi_status = BLK_STS_OK;
-			bio_endio(bio);
-		} else {
-			dc->dupwrites--;
-		}
-		return r;
-	} else if (r < 0) {
-		goto out_2;
+		r = __handle_no_lbn_pbn_with_hash(dc, bio, lbn, pbn_this,
+						  lbnpbn_value);
+	} else if (r == 0) {
+		/* LBN->PBN mapping entry exists */
+		r = __handle_has_lbn_pbn_with_hash(dc, bio, lbn, pbn_this,
+						   lbnpbn_value);
 	}
-
-	/* LBN->PBN mapping entry exists */
-	dc->overwrites++;
-	pbn_old = lbnpbn_value.pbn;
-	if (pbn_new != pbn_old) {
-		r = dc->mdops->inc_refcount(dc->bmd, pbn_new);
-		if (r < 0)
-			goto out_inc_refcount_2;
-
-		new_lbnpbn_value.pbn = pbn_new;
-
-		r = dc->kvs_lbn_pbn->kvs_insert(dc->kvs_lbn_pbn, (void *)&lbn,
-			sizeof(lbn), (void *)&new_lbnpbn_value,
-			sizeof(new_lbnpbn_value));
-		if (r < 0)
-			goto out_kvs_insert_2;
-
-		r = dc->mdops->dec_refcount(dc->bmd, pbn_old);
-		if (r < 0)
-			goto out_dec_refcount_2;
-	}
-
-	/* Nothing to do if writing same data to same LBN */
-	goto out_2;
-
-out_dec_refcount_2:
-	dc->kvs_lbn_pbn->kvs_insert(dc->kvs_lbn_pbn, (void *)&lbn,
-			sizeof(lbn), (void *)&lbnpbn_value,
-			sizeof(lbnpbn_value));
-out_kvs_insert_2:
-	dc->mdops->dec_refcount(dc->bmd, pbn_new);
-out_inc_refcount_2:
-	dc->overwrites--;
-out_2:
-	if (r >= 0) {
-		bio->bi_status = BLK_STS_OK;
-		bio_endio(bio);
-	} else {
-		dc->dupwrites--;
-	}
+	if (r == 0)
+		dc->dupwrites++;
 	return r;
 }
 
+/*
+ * Performs a lookup for Hash->PBN entry.
+ * If entry is not found, it invokes handle_write_no_hash.
+ * If entry is found, it invokes handle_write_with_hash.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
 static int handle_write(struct dedup_config *dc, struct bio *bio)
 {
 	u64 lbn;
@@ -414,11 +568,12 @@ static int handle_write(struct dedup_config *dc, struct bio *bio)
 		return r;
 
 	r = dc->kvs_hash_pbn->kvs_lookup(dc->kvs_hash_pbn, hash,
-				dc->crypto_key_size, &hashpbn_value, &vsize);
+					 dc->crypto_key_size,
+					 &hashpbn_value, &vsize);
 
-	if (r == 0)
+	if (r == -ENODATA)
 		r = handle_write_no_hash(dc, bio, lbn, hash);
-	else if (r > 0)
+	else if (r == 0)
 		r = handle_write_with_hash(dc, bio, lbn, hash,
 					   hashpbn_value);
 
@@ -437,6 +592,10 @@ static int handle_write(struct dedup_config *dc, struct bio *bio)
 	return 0;
 }
 
+/*
+ * Processes block io requests and propagates negative error
+ * code to block io status (BLK_STS_*).
+ */
 static void process_bio(struct dedup_config *dc, struct bio *bio)
 {
 	int r;
@@ -458,21 +617,21 @@ static void process_bio(struct dedup_config *dc, struct bio *bio)
 	}
 
 	if (r < 0) {
-		switch (-1*r) {
-		case EWOULDBLOCK:
+		switch (r) {
+		case -EWOULDBLOCK:
 			bio->bi_status = BLK_STS_AGAIN;
 			break;
-		case EINVAL:
-		case EIO:
+		case -EINVAL:
+		case -EIO:
 			bio->bi_status = BLK_STS_IOERR;
 			break;
-		case ENODATA:
+		case -ENODATA:
 			bio->bi_status = BLK_STS_MEDIUM;
 			break;
-		case ENOMEM:
+		case -ENOMEM:
 			bio->bi_status = BLK_STS_RESOURCE;
 			break;
-		case EPERM:
+		case -EPERM:
 			bio->bi_status = BLK_STS_PROTECTION;
 			break;
 		}
@@ -480,6 +639,10 @@ static void process_bio(struct dedup_config *dc, struct bio *bio)
 	}
 }
 
+/*
+ * Main function for all work pool threads that process the block io
+ * operation.
+ */
 static void do_work(struct work_struct *ws)
 {
 	struct dedup_work *data = container_of(ws, struct dedup_work, worker);
@@ -491,6 +654,10 @@ static void do_work(struct work_struct *ws)
 	process_bio(dc, bio);
 }
 
+/*
+ * Defers block io operations by enqueuing them in the work pool
+ * queue.
+ */
 static void dedup_defer_bio(struct dedup_config *dc, struct bio *bio)
 {
 	struct dedup_work *data;
@@ -510,6 +677,11 @@ static void dedup_defer_bio(struct dedup_config *dc, struct bio *bio)
 	queue_work(dc->workqueue, &(data->worker));
 }
 
+/*
+ * Wrapper function for dedup_defer_bio.
+ *
+ * Returns DM_MAPIO_SUBMITTED.
+ */
 static int dm_dedup_map(struct dm_target *ti, struct bio *bio)
 {
 	dedup_defer_bio(ti->private, bio);
@@ -533,10 +705,16 @@ struct dedup_args {
 	char backend_str[MAX_BACKEND_NAME_LEN];
 
 	u32 flushrq;
-	
+
 	bool corruption_flag;
 };
 
+/*
+ * Parses metadata device.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
 static int parse_meta_dev(struct dedup_args *da, struct dm_arg_set *as,
 			  char **err)
 {
@@ -550,6 +728,12 @@ static int parse_meta_dev(struct dedup_args *da, struct dm_arg_set *as,
 	return r;
 }
 
+/*
+ * Parses data device.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
 static int parse_data_dev(struct dedup_args *da, struct dm_arg_set *as,
 			  char **err)
 {
@@ -565,6 +749,12 @@ static int parse_data_dev(struct dedup_args *da, struct dm_arg_set *as,
 	return r;
 }
 
+/*
+ * Parses block size.
+ *
+ * Returns -EINVAL in failure.
+ * Returns 0 on success.
+ */
 static int parse_block_size(struct dedup_args *da, struct dm_arg_set *as,
 			    char **err)
 {
@@ -589,6 +779,12 @@ static int parse_block_size(struct dedup_args *da, struct dm_arg_set *as,
 	return 0;
 }
 
+/*
+ * Checks for a recognized hash algorithm.
+ *
+ * Returns -EINVAL in failure.
+ * Returns 0 on success.
+ */
 static int parse_hash_algo(struct dedup_args *da, struct dm_arg_set *as,
 			   char **err)
 {
@@ -602,6 +798,12 @@ static int parse_hash_algo(struct dedup_args *da, struct dm_arg_set *as,
 	return 0;
 }
 
+/*
+ * Checks for a supported metadata backend.
+ *
+ * Returns -EINVAL in failure.
+ * Returns 0 on success.
+ */
 static int parse_backend(struct dedup_args *da, struct dm_arg_set *as,
 			 char **err)
 {
@@ -623,6 +825,12 @@ static int parse_backend(struct dedup_args *da, struct dm_arg_set *as,
 	return 0;
 }
 
+/*
+ * Checks for a valid flushrq value.
+ *
+ * Returns -EINVAL in failure.
+ * Returns 0 on success.
+ */
 static int parse_flushrq(struct dedup_args *da, struct dm_arg_set *as,
 			 char **err)
 {
@@ -634,6 +842,12 @@ static int parse_flushrq(struct dedup_args *da, struct dm_arg_set *as,
 	return 0;
 }
 
+/*
+ * Checks for a valid corruption flag value.
+ *
+ * Returns -EINVAL in failure.
+ * Returns 0 on success.
+ */
 static int parse_corruption_flag(struct dedup_args *da, struct dm_arg_set *as,
 			 char **err)
 {
@@ -649,6 +863,13 @@ static int parse_corruption_flag(struct dedup_args *da, struct dm_arg_set *as,
         return 0;
 
 }
+
+/*
+ * Wrapper function for all parse functions.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
 static int parse_dedup_args(struct dedup_args *da, int argc,
 			    char **argv, char **err)
 {
@@ -691,7 +912,7 @@ static int parse_dedup_args(struct dedup_args *da, int argc,
 	r = parse_flushrq(da, &as, err);
 	if (r)
 		return r;
-	
+
 	r = parse_corruption_flag(da, &as, err);
 	if (r)
 		return r;
@@ -699,6 +920,10 @@ static int parse_dedup_args(struct dedup_args *da, int argc,
 	return 0;
 }
 
+/*
+ * Decrements metadata and data device's use count
+ * and removes them if necessary.
+ */
 static void destroy_dedup_args(struct dedup_args *da)
 {
 	if (da->meta_dev)
@@ -708,6 +933,12 @@ static void destroy_dedup_args(struct dedup_args *da)
 		dm_put_device(da->ti, da->data_dev);
 }
 
+/*
+ * Dmdedup constructor.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
 static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 {
 	struct dedup_args da;
@@ -927,6 +1158,8 @@ out:
 	return r;
 }
 
+
+/* Dmdedup destructor. */
 static void dm_dedup_dtr(struct dm_target *ti)
 {
 	struct dedup_config *dc = ti->private;
@@ -963,6 +1196,7 @@ static void dm_dedup_dtr(struct dm_target *ti)
 	kfree(dc);
 }
 
+/* Gives Dmdedup status. */
 static void dm_dedup_status(struct dm_target *ti, status_type_t status_type,
 			    unsigned int status_flags, char *result, unsigned int maxlen)
 {
@@ -1004,6 +1238,12 @@ static void dm_dedup_status(struct dm_target *ti, status_type_t status_type,
 	}
 }
 
+/*
+ * Cleans up Hash->PBN entry.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
 static int cleanup_hash_pbn(void *key, int32_t ksize, void *value,
 			    s32 vsize, void *data)
 {
@@ -1039,6 +1279,14 @@ out:
 	return r;
 }
 
+/*
+ * Performs garbage collection.
+ * Iterates over all Hash->PBN entries and cleans up
+ * hashes if the refcount of block is 1.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
 static int garbage_collect(struct dedup_config *dc)
 {
 	int err = 0;
@@ -1052,6 +1300,14 @@ static int garbage_collect(struct dedup_config *dc)
 	return err;
 }
 
+/*
+ * Gives Debug messages for garbage collection.
+ * Also, enables and disables corruption check and
+ * FEC flags.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
 static int dm_dedup_message(struct dm_target *ti,
 			    unsigned int argc, char **argv)
 {

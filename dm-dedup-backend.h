@@ -22,6 +22,11 @@ struct kvstore;			/* key-value store identifier */
 
 struct metadata_ops {
 	/*
+	 * It initializes backend for cowbtree and inram. In case of cowbtree
+	 * either new metadata device is created or it is reconstructed from
+	 * existing metadata device. For in-ram backend new linked list is
+	 * initialized.
+	 *
 	 * Returns ERR_PTR(*) on error.
 	 * Valid pointer on success.
 	 */
@@ -36,7 +41,7 @@ struct metadata_ops {
 	 * maximum _value_ of the key. If kmax is equal to zero,
 	 * then maximum is not known by the caller.
 	 *
-	 * Returns -ERR_PTR(*) on error.
+	 * Returns ERR_PTR(*) on error.
 	 * Valid pointer on success.
 	 */
 	struct kvstore * (*kvs_create_linear)(struct metadata *md,
@@ -49,7 +54,7 @@ struct metadata_ops {
 	 * maximum _number_ of the keys. If keymax is equal to zero,
 	 * then maximum is not known by the caller.
 	 *
-	 * Returns -ERR_PTR(*) on error.
+	 * Returns ERR_PTR(*) on error.
 	 * Valid pointer on success.
 	 */
 	struct kvstore * (*kvs_create_sparse)(struct metadata *md,
@@ -57,40 +62,41 @@ struct metadata_ops {
 					      u32 knummax, bool unformatted);
 
 	/*
-	 * Returns -ERR* on error.
+	 * Returns -ERR code on error.
 	 * Returns 0 on success. In this case, "blockn" contains a newly
 	 * allocated block number.
 	 */
 	int (*alloc_data_block)(struct metadata *md, uint64_t *blockn);
 
 	/*
-	 * Returns -ERR* on error.
+	 * Returns -ERR code on error.
 	 * Returns 0 on success.
 	 */
 	int (*inc_refcount)(struct metadata *md, uint64_t blockn);
 
 	/*
-	 * Returns -ERR* on error.
+	 * Returns -ERR code on error.
 	 * Returns 0 on success.
 	 */
 	int (*dec_refcount)(struct metadata *md, uint64_t blockn);
 
 	/*
-	 * Returns -ERR* on error.
-	 * Returns 0 on success.
+	 * Returns -ERR code on error.
+	 * Returns refcount on success.
 	 */
 	int (*get_refcount)(struct metadata *md, uint64_t blockn);
 
 	/*
-	 * Returns -ERR on error.
+	 * Returns -ERR code on error.
 	 * Return 0 on success.
 	 */
 	int (*flush_meta)(struct metadata *md);
 
 	/*
-	 * Returns the private data stored in the metadata.
+	 * It stores the private data stored in the metadata into
+	 * the data pointer provided.
 	 *
-	 * Returns -ERR* on error.
+	 * Returns -ERR code on error.
 	 * Returns 0 on success.
 	 */
 	int (*get_private_data)(struct metadata *md, void **data,
@@ -99,7 +105,7 @@ struct metadata_ops {
 	/*
 	 * Fills in private data stored in the metadata.
 	 *
-	 * Returns -ERR* on error.
+	 * Returns -ERR code on error.
 	 * Returns 0 on success.
 	 */
 	int (*set_private_data)(struct metadata *md, void *data, uint32_t size);

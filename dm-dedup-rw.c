@@ -19,6 +19,11 @@
 
 #define DMD_IO_SIZE	4096
 
+/*
+ * Given the block io sector,
+ * it computes the sector number
+ * and returns the lbn.
+ */
 static sector_t compute_sector(struct bio *bio,
 			       struct dedup_config *dc)
 {
@@ -31,6 +36,12 @@ static sector_t compute_sector(struct bio *bio,
 	return to_be_lbn;
 }
 
+/*
+ * Fetches whole block for the iorequest.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
 static int fetch_whole_block(struct dedup_config *dc,
 			     uint64_t pbn, struct page_list *pl)
 {
@@ -53,6 +64,12 @@ static int fetch_whole_block(struct dedup_config *dc,
 	return dm_io(&iorq, 1, &where, &error_bits);
 }
 
+/*
+ * Merges data of sectors.
+ *
+ * Returns -EINVAL code in failure.
+ * Returns 0 on success.
+ */
 static int merge_data(struct dedup_config *dc, struct page *page,
 		      struct bio *bio)
 {
@@ -72,7 +89,7 @@ static int merge_data(struct dedup_config *dc, struct page *page,
 
 	/* Locating the right sector to merge */
 	dest_page_vaddr = page_address(page) + to_bytes(position);
-	
+
 	bio_for_each_segment(bvec, bio, iter) {
 		src_page_vaddr = page_address(bio_iter_page(bio, iter)) + bio_iter_offset(bio, iter);
 
@@ -122,6 +139,12 @@ static void my_endio(struct bio *clone)
 	bio_put(clone);
 }
 
+/*
+ * It allocates and initializes the bio structure.
+ *
+ * Returns NULL in failure.
+ * Returns the valid pointer to struct bio on success.
+ */
 static struct bio *create_bio(struct dedup_config *dc,
 			      struct bio *bio)
 {
@@ -161,6 +184,12 @@ out:
 	return clone;
 }
 
+/*
+ * Main function for handling bio.
+ *
+ * Returns NULL in failure.
+ * Returns the valid pointer to struct bio on success.
+ */
 static struct bio *prepare_bio_with_pbn(struct dedup_config *dc,
 					struct bio *bio, uint64_t pbn)
 {
@@ -227,6 +256,13 @@ out:
 	return clone;
 }
 
+/*
+ * Wrapper function for prepare_bio_with_pbn and
+ * prepare_bio_without_pbn.
+ *
+ * Returns ERR_PTR in failure.
+ * Returns the valid pointer to struct bio on success.
+ */
 struct bio *prepare_bio_on_write(struct dedup_config *dc, struct bio *bio)
 {
 	int r;
@@ -241,9 +277,9 @@ struct bio *prepare_bio_on_write(struct dedup_config *dc, struct bio *bio)
 	/* check for old or new lbn and fetch the appropriate pbn */
 	r = dc->kvs_lbn_pbn->kvs_lookup(dc->kvs_lbn_pbn, (void *)&lbn,
 					sizeof(lbn), (void *)&lbnpbn_value, &vsize);
-	if (r == 0)
+	if (r == -ENODATA)
 		clone = prepare_bio_without_pbn(dc, bio);
-	else if (r == 1)
+	else if (r == 0)
 		clone = prepare_bio_with_pbn(dc, bio,
 					     lbnpbn_value.pbn * dc->sectors_per_block);
 	else

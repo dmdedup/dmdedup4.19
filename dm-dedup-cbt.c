@@ -23,6 +23,7 @@
 #include "dm-dedup-cbt.h"
 #include "dm-dedup-backend.h"
 #include "dm-dedup-kvstore.h"
+#include "dm-dedup-ut-handlewrite.h"
 
 #define DELETED_ENTRY 0x6B
 
@@ -54,7 +55,6 @@ struct metadata {
 
 struct kvstore_cbt_linear {
 	struct kvstore ckvs;
-
 	struct dm_btree_info info;
 	u64 root;
 };
@@ -62,17 +62,17 @@ struct kvstore_cbt_linear {
 struct kvstore_cbt_sparse {
 	struct kvstore ckvs;
 	u32 entry_size;
-
 	struct dm_btree_info info;
 	u64 root;
 
-    /* We will put max limit for linear probing. We are maintaining two
-     * values for that. First one indicates current max value for linear
-     * probing and second is hard limit until which linear probing is
-     * allowed.
-     */
-	u32 curr_lpmax;
-	u32 lpmax;
+	/*
+	 * We will put max limit for linear probing.  We are maintaining two
+	 * values for that.  First one indicates current max value for linear
+	 * probing and second is hard limit until which linear probing is
+	 * allowed.
+	 */
+	u32 lpc_cur;
+	u32 lpc_max;
 
 };
 
@@ -89,7 +89,7 @@ struct metadata_superblock {
 	__le32 flags; /* General purpose flags */
 	__le64 blocknr;	/* This block number, dm_block_t. */
 	__u8 uuid[16]; /* UUID of device (Not used) */
-	__u8 last_curr_lpmax; /*Stores current limit on linear probing. */
+	__u8 lpc_last; /* Stores current limit on linear probing */
 	/* Metadata space map */
 	__u8 metadata_space_map_root[SPACE_MAP_ROOT_SIZE];
 	__u8 data_space_map_root[SPACE_MAP_ROOT_SIZE]; /* Data space map */
@@ -101,6 +101,14 @@ struct metadata_superblock {
 	__le64 metadata_nr_blocks;/* Number of metadata blocks used. */
 } __packed;
 
+/*
+ * It initializes the root of linear and sparse cow btrees and also
+ * in case sparse cowbtree restores last set max linear probing value
+ * from superblock stored in metadata device.
+ *
+ * Return -ERR code on failure.
+ * return 0 on success.
+ */
 static int __begin_transaction(struct metadata *md)
 {
 	int r;
@@ -119,7 +127,7 @@ static int __begin_transaction(struct metadata *md)
 
 	if (md->kvs_sparse) {
 		md->kvs_sparse->root = le64_to_cpu(disk_super->hash_pbn_root);
-		md->kvs_sparse->curr_lpmax = disk_super->last_curr_lpmax;
+		md->kvs_sparse->lpc_cur = disk_super->lpc_last;
 	}
 
 	memcpy(md->private_data, disk_super->private_data, PRIVATE_DATA_SIZE);
@@ -129,6 +137,13 @@ static int __begin_transaction(struct metadata *md)
 	return r;
 }
 
+/*
+ * It stores the current state of metadata device into superblock and write it
+ * to disk.
+ *
+ * Returns -ERR on failure.
+ * Returns 0 on success.
+ */
 static int __commit_transaction(struct metadata *md, bool clean_shutdown_flag)
 {
 	int r = 0;
@@ -172,7 +187,7 @@ static int __commit_transaction(struct metadata *md, bool clean_shutdown_flag)
 
 	if (md->kvs_sparse) {
 		disk_super->hash_pbn_root = cpu_to_le64(md->kvs_sparse->root);
-		disk_super->last_curr_lpmax = md->kvs_sparse->curr_lpmax;
+		disk_super->lpc_last = md->kvs_sparse->lpc_cur;
 	}
 
 	r = dm_sm_copy_root(md->meta_sm,
@@ -204,6 +219,7 @@ out:
 	return r;
 }
 
+/* It initializes super block fields. */
 static int write_initial_superblock(struct metadata *md)
 {
 	int r;
@@ -262,6 +278,13 @@ bad_locked:
 	return r;
 }
 
+/*
+ * It checks if first block of superblock is zeroed out or not. If found
+ * zeroed out result is filled with true otherwise false.
+ *
+ * Returns -ERR code on error scenario.
+ * Returns 0 on successful execution.
+ */
 static int superblock_all_zeroes(struct dm_block_manager *bm, bool *result)
 {
 	int r;
@@ -290,6 +313,13 @@ static int superblock_all_zeroes(struct dm_block_manager *bm, bool *result)
 	return 0;
 }
 
+/*
+ * It verifies superblock various fields set with correct
+ * values or not.
+ *
+ * Returns -ERR on failure.
+ * Returns 0 on success.
+ */
 static int verify_superblock(struct dm_block_manager *bm)
 {
 	int r;
@@ -522,12 +552,12 @@ static int alloc_data_block_cowbtree(struct metadata *md, uint64_t *blockn)
 	return dm_sm_new_block(md->data_sm, blockn);
 }
 
-static int inc_refcount_cowbtree(struct metadata *md, uint64_t blockn)
+int inc_refcount_cowbtree(struct metadata *md, uint64_t blockn)
 {
 	return dm_sm_inc_block(md->data_sm, blockn);
 }
 
-static int dec_refcount_cowbtree(struct metadata *md, uint64_t blockn)
+int dec_refcount_cowbtree(struct metadata *md, uint64_t blockn)
 {
 	return dm_sm_dec_block(md->data_sm, blockn);
 }
@@ -562,9 +592,14 @@ bool is_deleted_entry(const char *ptr, uint32_t length)
 /*********************************************************
  *		Linear KVS Functions			 *
  *********************************************************/
-
-static int kvs_delete_linear_cowbtree(struct kvstore *kvs,
-				      void *key, int32_t ksize)
+/*
+ * It deletes key from btree.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
+int kvs_delete_linear_cowbtree(struct kvstore *kvs,
+			       void *key, int32_t ksize)
 {
 	int r;
 	struct kvstore_cbt_linear *kvcbt = NULL;
@@ -585,14 +620,14 @@ static int kvs_delete_linear_cowbtree(struct kvstore *kvs,
 }
 
 /*
- * 0 - not found
- * 1 - found
- * < 0 - error on lookup
+ * 0 - on success
+ * -ENODATA - if entry not found
+ * <0 - error on lookup
  */
 static int kvs_lookup_linear_cowbtree(struct kvstore *kvs, void *key,
 				      s32 ksize, void *value, int32_t *vsize)
 {
-	int r;
+	int r = -ENODATA;
 	struct kvstore_cbt_linear *kvcbt = NULL;
 
 	kvcbt = container_of(kvs, struct kvstore_cbt_linear, ckvs);
@@ -602,17 +637,17 @@ static int kvs_lookup_linear_cowbtree(struct kvstore *kvs, void *key,
 
 	r = dm_btree_lookup(&(kvcbt->info), kvcbt->root, key, value);
 
-	if (r == -ENODATA)
-		return 0;
-	else if (r >= 0)
-		return 1;
-	else
-		return r;
+	return r;
 }
 
-static int kvs_insert_linear_cowbtree(struct kvstore *kvs, void *key,
-				      s32 ksize, void *value,
-				      int32_t vsize)
+/* Inserts key into cow btree.
+ *
+ * Returns -ERR code in failure.
+ * Reurns 0 on success.
+ */
+int kvs_insert_linear_cowbtree(struct kvstore *kvs, void *key,
+			       s32 ksize, void *value,
+			       int32_t vsize)
 {
 	int inserted;
 	struct kvstore_cbt_linear *kvcbt = NULL;
@@ -665,9 +700,11 @@ static struct kvstore *kvs_create_linear_cowbtree(struct metadata *md,
 	kvs->info.value_type.equal = NULL;
 
 	if (!unformatted) {
-		kvs->ckvs.kvs_insert = kvs_insert_linear_cowbtree;
+		kvs->ckvs.kvs_insert = GLUE(INJECT_ERR_STR,
+					    kvs_insert_linear_cowbtree);
 		kvs->ckvs.kvs_lookup = kvs_lookup_linear_cowbtree;
-		kvs->ckvs.kvs_delete = kvs_delete_linear_cowbtree;
+		kvs->ckvs.kvs_delete = GLUE(INJECT_ERR_STR,
+					    kvs_delete_linear_cowbtree);
 		kvs->ckvs.kvs_iterate = NULL;
 
 		md->kvs_linear = kvs;
@@ -682,9 +719,11 @@ static struct kvstore *kvs_create_linear_cowbtree(struct metadata *md,
 		/* I think this should be moved below the 4 lines below */
 		flush_meta_cowbtree(md);
 
-		kvs->ckvs.kvs_insert = kvs_insert_linear_cowbtree;
+		kvs->ckvs.kvs_insert = GLUE(INJECT_ERR_STR,
+					    kvs_insert_linear_cowbtree);
 		kvs->ckvs.kvs_lookup = kvs_lookup_linear_cowbtree;
-		kvs->ckvs.kvs_delete = kvs_delete_linear_cowbtree;
+		kvs->ckvs.kvs_delete = GLUE(INJECT_ERR_STR,
+					    kvs_delete_linear_cowbtree);
 		kvs->ckvs.kvs_iterate = NULL;
 
 		md->kvs_linear = kvs;
@@ -701,8 +740,8 @@ badtree:
  *		Sparse KVS Functions			*
  ********************************************************/
 
-static int kvs_delete_sparse_cowbtree(struct kvstore *kvs,
-				      void *key, int32_t ksize)
+int kvs_delete_sparse_cowbtree(struct kvstore *kvs,
+			       void *key, int32_t ksize)
 {
 	char *entry;
 	u64 key_val;
@@ -760,7 +799,8 @@ repeat:
 }
 
 /*
- * 0 - not found
+ * 0 - not found or even after hitting limit for max linear
+ * probing but we could not find an entry.
  * 1 - found
  * < 0 - error on lookup
  */
@@ -769,7 +809,7 @@ static int kvs_lookup_sparse_cowbtree(struct kvstore *kvs, void *key,
 {
 	char *entry;
 	u64 key_val;
-	int i, r;
+	int i, r = -ENODATA;
 	struct kvstore_cbt_sparse *kvcbt = NULL;
 
 	kvcbt = container_of(kvs, struct kvstore_cbt_sparse, ckvs);
@@ -784,36 +824,48 @@ static int kvs_lookup_sparse_cowbtree(struct kvstore *kvs, void *key,
 	key_val = (*(uint64_t *)key);
 	/*
 	 * In case of linear probing we need to iterate only till current set
-	 * lpmax. Need to put lock around whole code since multiple threads
+	 * lpc_max.
+	 */
+	/*
+	 * XXX:Need to put lock around whole code since multiple threads
 	 * might be accessing this limit.
 	 */
-	for (i = 0; i <= kvcbt->curr_lpmax; i++) {
+	for (i = 0; i <= kvcbt->lpc_cur; i++) {
 		r = dm_btree_lookup(&(kvcbt->info), kvcbt->root, &key_val,
 		entry);
+		/* if entry not found in btree */
 		if (r == -ENODATA) {
 			kfree(entry);
-			return 0;
-		} else if (r >= 0) {
+			return r;
+		} else if (r == 0) {
+			/* If entry is found but only first 8 bytes are matched. */
 			if (!memcmp(entry, key, ksize)) {
 				memcpy(value, entry + ksize, kvs->vsize);
 				kfree(entry);
-				return 1;
+				return 0;
 			}
 			DMWARN("kvs_lookup_sparse_cowbtree: hash collision for "
 			"key :%llu %s", key_val, entry);
 			key_val++;
 		} else {
+			/* Error in finding an entry. */
 			kfree(entry);
 			return r;
 		}
 	}
 	kfree(entry);
-	return 0;
+	return r;
 }
 
-static int kvs_insert_sparse_cowbtree(struct kvstore *kvs, void *key,
-				      s32 ksize, void *value,
-				      int32_t vsize)
+/*
+ * It tries to insert key into cow btree. In case of collision linear
+ * probing is done until it hits max limit.
+ *
+ * Returns -ERR code on failure.
+ * Returns 0 on success.
+ */
+int kvs_insert_sparse_cowbtree(struct kvstore *kvs, void *key,
+			       s32 ksize, void *value, int32_t vsize)
 {
 	char *entry;
 	u64 key_val;
@@ -834,7 +886,7 @@ static int kvs_insert_sparse_cowbtree(struct kvstore *kvs, void *key,
 
 	key_val = (*(uint64_t *)key);
 
-	for (i = 0; i <= kvcbt->lpmax; i++) {
+	for (i = 0; i <= kvcbt->lpc_max; i++) {
 		r = dm_btree_lookup(&(kvcbt->info), kvcbt->root, &key_val,
 		entry);
 		if (r == -ENODATA ||
@@ -845,16 +897,16 @@ static int kvs_insert_sparse_cowbtree(struct kvstore *kvs, void *key,
 			r = dm_btree_insert(&(kvcbt->info), kvcbt->root,
 			&key_val, entry, &(kvcbt->root));
 			kfree(entry);
-			if (i > kvcbt->curr_lpmax) {
+			if (i > kvcbt->lpc_cur) {
 				/*
 				 * TODO: Need to put locks around it since
-				 * multiple threads might  read/write this
+				 * multiple threads might read/write this
 				 * variable.
 				 */
 				DMINFO("Changing linear probing to %d", i);
-				kvcbt->curr_lpmax = i;
+				kvcbt->lpc_cur = i;
 			}
-			return r;
+			return 0;
 		} else if (r >= 0) {
 			DMINFO("Collision detected for key: %s",(char *)key);
 			key_val++;
@@ -863,9 +915,10 @@ static int kvs_insert_sparse_cowbtree(struct kvstore *kvs, void *key,
 			return r;
 		}
 	}
-	DMWARN("Linear probing hard limit hit for insert.");
-	DMINFO("Changing linear probing to hard limit :%d", kvcbt->lpmax);
-	kvcbt->curr_lpmax = kvcbt->lpmax; //TODO:Check if locks required
+	DMINFO("Linear probing hard limit hit for insert hence"
+	"changing current max to hard limit :%d", kvcbt->lpc_max);
+	/* XXX: Need to hold lock on variable */
+	kvcbt->lpc_cur = kvcbt->lpc_max;
 	kfree(entry);
 	return -ENOSPC;
 
@@ -992,13 +1045,15 @@ static struct kvstore *kvs_create_sparse_cowbtree(struct metadata *md,
 	kvs->info.value_type.inc = NULL;
 	kvs->info.value_type.dec = NULL;
 	kvs->info.value_type.equal = NULL;
-	kvs->lpmax = MAX_LINEAR_PROBING_LIMIT;
-	kvs->curr_lpmax = MAX_LINEAR_PROBING_INITIALIZER;
+	kvs->lpc_max = MAX_LINEAR_PROBING_LIMIT;
+	kvs->lpc_cur = 0;
 
 	if (!unformatted) {
-		kvs->ckvs.kvs_insert = kvs_insert_sparse_cowbtree;
+		kvs->ckvs.kvs_insert = GLUE(INJECT_ERR_STR,
+					    kvs_insert_sparse_cowbtree);
 		kvs->ckvs.kvs_lookup = kvs_lookup_sparse_cowbtree;
-		kvs->ckvs.kvs_delete = kvs_delete_sparse_cowbtree;
+		kvs->ckvs.kvs_delete = GLUE(INJECT_ERR_STR,
+					    kvs_delete_sparse_cowbtree);
 		kvs->ckvs.kvs_iterate = kvs_iterate_sparse_cowbtree;
 
 		md->kvs_sparse = kvs;
@@ -1013,9 +1068,11 @@ static struct kvstore *kvs_create_sparse_cowbtree(struct metadata *md,
 		/* I think this should be moved below the 4 lines below */
 		flush_meta_cowbtree(md);
 
-		kvs->ckvs.kvs_insert = kvs_insert_sparse_cowbtree;
+		kvs->ckvs.kvs_insert = GLUE(INJECT_ERR_STR,
+					    kvs_insert_sparse_cowbtree);
 		kvs->ckvs.kvs_lookup = kvs_lookup_sparse_cowbtree;
-		kvs->ckvs.kvs_delete = kvs_delete_sparse_cowbtree;
+		kvs->ckvs.kvs_delete = GLUE(INJECT_ERR_STR,
+					    kvs_delete_sparse_cowbtree);
 		kvs->ckvs.kvs_iterate = kvs_iterate_sparse_cowbtree;
 
 		md->kvs_sparse = kvs;
@@ -1053,8 +1110,8 @@ struct metadata_ops metadata_ops_cowbtree = {
 	.kvs_create_sparse = kvs_create_sparse_cowbtree,
 
 	.alloc_data_block = alloc_data_block_cowbtree,
-	.inc_refcount = inc_refcount_cowbtree,
-	.dec_refcount = dec_refcount_cowbtree,
+	.inc_refcount = GLUE(INJECT_ERR_STR, inc_refcount_cowbtree),
+	.dec_refcount = GLUE(INJECT_ERR_STR, dec_refcount_cowbtree),
 	.get_refcount = get_refcount_cowbtree,
 
 	.flush_meta = flush_meta_cowbtree,
