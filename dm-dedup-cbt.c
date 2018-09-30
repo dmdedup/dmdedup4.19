@@ -1,15 +1,17 @@
 /*
- * Copyright (C) 2012-2017 Vasily Tarasov
+ * Copyright (C) 2012-2018 Vasily Tarasov
  * Copyright (C) 2012-2014 Geoff Kuenning
  * Copyright (C) 2012-2014 Sonam Mandal
  * Copyright (C) 2012-2014 Karthikeyani Palanisami
  * Copyright (C) 2012-2014 Philip Shilane
  * Copyright (C) 2012-2014 Sagar Trehan
- * Copyright (C) 2012-2017 Erez Zadok
+ * Copyright (C) 2012-2018 Erez Zadok
  * Copyright (c) 2016-2017 Vinothkumar Raja
  * Copyright (c) 2017-2017 Nidhi Panpalia
- * Copyright (c) 2012-2017 Stony Brook University
- * Copyright (c) 2012-2017 The Research Foundation for SUNY
+ * Copyright (c) 2017-2018 Noopur Maheshwari
+ * Copyright (c) 2018-2018 Rahul Rane
+ * Copyright (c) 2012-2018 Stony Brook University
+ * Copyright (c) 2012-2018 The Research Foundation for SUNY
  * This file is released under the GPL.
  */
 
@@ -35,7 +37,6 @@
 #define DM_DEDUP_MAGIC 0x44447570 /* Hex value for "DDUP" */
 #define DM_DEDUP_VERSION 1
 #define SUPERBLOCK_CSUM_XOR 189575
-
 struct metadata {
 	struct dm_block_manager *meta_bm;
 	struct dm_transaction_manager *tm;
@@ -701,62 +702,97 @@ badtree:
  *		Sparse KVS Functions			*
  ********************************************************/
 
+/*
+ * It deletes the exact entry whose keyval is provided as
+ * an input. No lookup is done here.
+ *
+ * Returns -ERR code in failure.
+ * Returns 0 on success.
+ */
+static int kvs_delete_entry(struct kvstore_cbt_sparse *kvcbt,
+			    char *cur_entry, char *next_entry,
+			    u64 cur_key_val, int ret_next)
+{
+	int r;
+
+	if (ret_next == 0 &&
+	    memcmp(cur_entry, next_entry, sizeof(cur_key_val)) == 0) {
+		/* There is a next key and it is a linearly probed one. */
+		memset(cur_entry, DELETED_ENTRY, kvcbt->entry_size);
+			       __dm_bless_for_disk(&cur_key_val);
+
+		r = dm_btree_insert(&(kvcbt->info), kvcbt->root,
+				    &cur_key_val, cur_entry, &(kvcbt->root));
+		DMWARN("Marked as tombstone for keyval = %lld", cur_key_val);
+	} else {
+		/*
+		 * There is a next key and it is not a linearly probed one.
+		 * OR
+		 * There is no next key.
+		 */
+		r = dm_btree_remove(&(kvcbt->info),
+				    kvcbt->root,
+				    &cur_key_val,
+				    &(kvcbt->root));
+		DMWARN("Performed actual deletion for keyval = %lld",
+		       cur_key_val);
+	}
+	return r;
+}
+
 static int kvs_delete_sparse_cowbtree(struct kvstore *kvs,
 				      void *key, int32_t ksize)
 {
-	char *entry;
-	u64 key_val;
-	int r;
+	char *cur_entry, *next_entry;
+	u64 key_val, cur_key_val;
+	int r = 0;
 	struct kvstore_cbt_sparse *kvcbt = NULL;
-	int lp_count = 0;
 
 	kvcbt = container_of(kvs, struct kvstore_cbt_sparse, ckvs);
 
 	if (ksize != kvs->ksize)
 		return -EINVAL;
 
-	entry = kmalloc(kvcbt->entry_size, GFP_NOIO);
-	if (!entry)
+	cur_entry = kmalloc(kvcbt->entry_size, GFP_NOIO);
+	if (!cur_entry)
 		return -ENOMEM;
 
 	key_val = (*(uint64_t *)key);
 
-repeat:
+	r = dm_btree_lookup(&(kvcbt->info), kvcbt->root, &key_val, cur_entry);
 
-	r = dm_btree_lookup(&(kvcbt->info), kvcbt->root, &key_val, entry);
 	if (r == -ENODATA) {
 		return -ENODEV;
-	} else if (r >= 0) {
-		if (!memcmp(entry, key, ksize)) {
-
-			if (lp_count == 0) {
-				r = dm_btree_remove(&(kvcbt->info),
-					    kvcbt->root, &key_val,
-					    &(kvcbt->root));
-			} else {
-				/*
-				 * For linearly probed entries, instead of
-				 * removing the entry from the btree, we
-				 * mark the entry as deleted to avoid holes
-				 * in linear probing.
-				 */
-
-				memset(entry, DELETED_ENTRY, kvcbt->entry_size);
-				__dm_bless_for_disk(&key_val);
-				r = dm_btree_insert(&(kvcbt->info),
-						kvcbt->root, &key_val,
-						entry, &(kvcbt->root));
-			}
-			kfree(entry);
-			return r;
-		}
-		key_val++;
-		lp_count++;
-		goto repeat;
-	} else {
-		kfree(entry);
-		return r;
 	}
+	while (r == 0) {
+		cur_key_val = key_val;
+		key_val++;
+
+		next_entry = kmalloc(kvcbt->entry_size, GFP_NOIO);
+		if (!next_entry)
+			return -ENOMEM;
+
+		r = dm_btree_lookup(&(kvcbt->info),
+				     kvcbt->root,
+				     &key_val, next_entry);
+
+		if (!memcmp(cur_entry, key, ksize)) {
+			/* Key found. */
+			r = kvs_delete_entry(kvcbt, cur_entry, next_entry,
+					     cur_key_val, r);
+			DMWARN("Deleted key successfully\n");
+			goto out;
+		} else if (r == 0) {
+			/* Key not found but there is a next key. */
+			cur_entry = next_entry;
+		} else {
+			break;
+		}
+	}
+out:
+	kfree(cur_entry);
+	kfree(next_entry);
+	return r;
 }
 
 /*
@@ -881,6 +917,7 @@ static int kvs_iterate_sparse_cowbtree(struct kvstore *kvs,
 	char *entry, *key, *value;
 	int r;
 	dm_block_t lowest, highest;
+
 	/*
 	 * For unit testing, we use dconfig to iterate over the
 	 * hash-pbn entries, and count is used to mark the second
@@ -889,6 +926,9 @@ static int kvs_iterate_sparse_cowbtree(struct kvstore *kvs,
 #ifdef __INJECT_ERROR__
 	struct dedup_config *dconfig;
 	int count = 0;
+	bool first = true;
+	char *next_entry;
+	u64 key_val;
 #endif
 
 	kvcbt = container_of(kvs, struct kvstore_cbt_sparse, ckvs);
@@ -936,12 +976,32 @@ static int kvs_iterate_sparse_cowbtree(struct kvstore *kvs,
 #ifdef __INJECT_ERROR__
 		if (memcmp(key, "xxxxxxxx", 8) == 0) {
 			DMWARN("iterate key: %s", key);
+
+			if (first) {
+				key_val = (*(uint64_t *)key);
+				first = false;
+			}
 			count++;
-			if (count == 2 || count == 4) {
+			key_val++;
+
+			if (count == 5) {
+				/*
+				 * Unit testing for the following scenario:
+				 * cur_entry = last entry in probe chain,
+				 * next_entry = entry not part of the chain.
+				 */
+				next_entry = kmalloc(kvcbt->entry_size,
+						     GFP_NOIO);
+				memset(next_entry, 1, kvcbt->entry_size);
+				dm_btree_insert(&(kvcbt->info), kvcbt->root,
+						&key_val, next_entry,
+						&(kvcbt->root));
+			}
+			if (count % 2 == 0 || count == 5) {
 				dconfig = (struct dedup_config *)dc;
 				dconfig->kvs_hash_pbn->kvs_delete(
-						dconfig->kvs_hash_pbn,
-						(void *)key, kvs->ksize);
+					dconfig->kvs_hash_pbn, (void *)key,
+					kvs->ksize);
 				DMINFO("Deleted key: %s", key);
 			}
 		}
