@@ -138,7 +138,6 @@ out:
 	bio_endio(bio);
 }
 
-/* Calls worker function with data in worker. */
 static void issue_work(struct work_struct *ws)
 {
 	struct check_work *data = container_of(ws, struct check_work, worker);
@@ -149,7 +148,6 @@ static void issue_work(struct work_struct *ws)
 	check_endio(io->base_bio, io);
 }
 
-/* Allocates and initializes workqueue and regsiters function for work. */
 void dedup_check_endio(struct bio *clone)
 {
 	struct check_work *data;
