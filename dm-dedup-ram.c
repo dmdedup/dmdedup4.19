@@ -229,9 +229,9 @@ static int kvs_delete_linear_inram(struct kvstore *kvs,
 }
 
 /*
- * 0 - not found
- * 1 - found
- * < 0 - error on lookup
+ * 0 - if entry found
+ * -ENODATA - if entry not found
+ * <0 - error on lookup
  */
 static int kvs_lookup_linear_inram(struct kvstore *kvs, void *key,
 				   s32 ksize, void *value,
@@ -239,6 +239,7 @@ static int kvs_lookup_linear_inram(struct kvstore *kvs, void *key,
 {
 	u64 idx;
 	char *ptr;
+	int r = -ENODATA;
 	struct kvstore_inram *kvinram = NULL;
 
 	kvinram = container_of(kvs, struct kvstore_inram, ckvs);
@@ -254,12 +255,12 @@ static int kvs_lookup_linear_inram(struct kvstore *kvs, void *key,
 	ptr = kvinram->store + kvs->vsize * idx;
 
 	if (is_empty(ptr, kvs->vsize))
-		return 0;
+		return r;
 
 	memcpy(value, ptr, kvs->vsize);
 	*vsize = kvs->vsize;
 
-	return 1;
+	return 0;
 }
 
 static int kvs_insert_linear_inram(struct kvstore *kvs, void *key,
@@ -418,8 +419,8 @@ doesnotexist:
 }
 
 /*
- * 0 - not found
- * 1 - found
+ * 0 - if entry found
+ * -ENODATA - if entry not found
  * < 0 - error on lookup
  */
 static int kvs_lookup_sparse_inram(struct kvstore *kvs, void *key,
@@ -429,6 +430,7 @@ static int kvs_lookup_sparse_inram(struct kvstore *kvs, void *key,
 	u32 entry_size, head, tail;
 	char *ptr;
 	struct kvstore_inram *kvinram = NULL;
+	int r = -ENODATA;
 
 	if (ksize != kvs->ksize)
 		return -EINVAL;
@@ -443,18 +445,18 @@ static int kvs_lookup_sparse_inram(struct kvstore *kvs, void *key,
 		ptr = kvinram->store + entry_size * head;
 
 		if (is_empty(ptr, entry_size))
-			return 0;
+			return r;
 
 		if (memcmp(ptr, key, kvs->ksize)) {
 			head = next_head(head, kvinram->kmax);
 		} else {
 			memcpy(value, ptr + kvs->ksize, kvs->vsize);
-			return 1;
+			return 0;
 		}
 
 	} while (head != tail);
 
-	return 0;
+	return r;
 }
 
 static int kvs_insert_sparse_inram(struct kvstore *kvs, void *key,
