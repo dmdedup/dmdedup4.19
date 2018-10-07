@@ -966,19 +966,6 @@ static int kvs_iterate_sparse_cowbtree(struct kvstore *kvs,
 	int r;
 	dm_block_t lowest, highest;
 
-	/*
-	 * For unit testing, we use dconfig to iterate over the
-	 * hash-pbn entries, and count is used to mark the second
-	 * and forth probed entry as a deleted entry (tombstone).
-	 */
-#ifdef __INJECT_ERROR__
-	struct dedup_config *dconfig;
-	int count = 0;
-	bool first = true;
-	char *next_entry;
-	u64 key_val;
-#endif
-
 	kvcbt = container_of(kvs, struct kvstore_cbt_sparse, ckvs);
 
 	entry = kmalloc(kvs->ksize + kvs->vsize, GFP_NOIO);
@@ -1017,49 +1004,12 @@ static int kvs_iterate_sparse_cowbtree(struct kvstore *kvs,
 		/* Split the key and value separately */
 		memcpy(key, entry, kvs->ksize);
 		memcpy(value, (void *)(entry + kvs->ksize), kvs->vsize);
-/*
- * For unit testing, we mark the middle (second and forth) probed
- * entries as deleted.
- */
-#ifdef __INJECT_ERROR__
-		if (memcmp(key, "xxxxxxxx", 8) == 0) {
-			DMWARN("iterate key: %s", key);
 
-			if (first) {
-				key_val = (*(uint64_t *)key);
-				first = false;
-			}
-			count++;
-			key_val++;
-
-			if (count == 5) {
-				/*
-				 * Unit testing for the following scenario:
-				 * cur_entry = last entry in probe chain,
-				 * next_entry = entry not part of the chain.
-				 */
-				next_entry = kmalloc(kvcbt->entry_size,
-						     GFP_NOIO);
-				memset(next_entry, 1, kvcbt->entry_size);
-				dm_btree_insert(&(kvcbt->info), kvcbt->root,
-						&key_val, next_entry,
-						&(kvcbt->root));
-			}
-			if (count % 2 == 0 || count == 5) {
-				dconfig = (struct dedup_config *)dc;
-				dconfig->kvs_hash_pbn->kvs_delete(
-					dconfig->kvs_hash_pbn, (void *)key,
-					kvs->ksize);
-				DMINFO("Deleted key: %s", key);
-			}
-		}
-#else
 		/* Call the cleanup callback function */
 		r = fn((void *)key, kvs->ksize, (void *)value,
 		       kvs->vsize, (void *)dc);
 		if (r)
 			goto out;
-#endif
 	}
 
 out:
