@@ -63,7 +63,7 @@ struct dedup_config {
 
 	struct workqueue_struct *workqueue;
 
-	struct bio_set *bs;
+	struct bio_set bs;
 	struct hash_desc_table *desc_table;
 
 	u64 logical_block_counter;	/* Total number of used LBNs */
