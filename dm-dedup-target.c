@@ -616,7 +616,6 @@ static int handle_discard(struct dedup_config *dc, struct bio *bio)
 	r = dc->kvs_lbn_pbn->kvs_lookup(dc->kvs_lbn_pbn, (void *)&lbn,
 					sizeof(lbn), (void *)&lbnpbn_value,
 					&vsize);
-
 	if (r == -ENODATA) {
 		/*
  		 * Entry not present in LBN->PBN store hence need to forward
@@ -628,9 +627,8 @@ static int handle_discard(struct dedup_config *dc, struct bio *bio)
 		do_io_remap_device(dc, bio);
 		goto out;
 	}
-	if (r != 0) {
+	if (r < 0)
 		goto out;
-	}
 
 	/* Entry found in the LBN->PBN store */
 	pbn_val = lbnpbn_value.pbn;
@@ -666,11 +664,14 @@ static int handle_discard(struct dedup_config *dc, struct bio *bio)
 	}
 	/*
  	 * If refcount reaches 1 then forward discard request to underlying
- 	 * block layer.
+ 	 * block layer else end bio request.
  	 */
-	if (dc->mdops->get_refcount(dc->bmd, pbn_val) == 1)
+	if (dc->mdops->get_refcount(dc->bmd, pbn_val) == 1) {
 		do_io(dc, bio, pbn_val);
-
+	} else {
+		bio->bi_status = BLK_STS_OK;
+		bio_endio(bio);
+	}
 out:
 	return r;
 }
