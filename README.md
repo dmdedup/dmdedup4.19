@@ -300,5 +300,3 @@ Key people involved in the project were Vasily Tarasov, Geoff Kuenning, Sonam Ma
 
 
 We also acknowledge the help of several students involved in the deduplication project: Teo Asinari, Deepak Jain, Mandar Joshi, Atul Karmarkar, Gary Lent, Amar Mudrankit, Meg O'Keefe, Nidhi Panpalia, Vinothkumar Raja, Noopur Maheshwari, Rahul Rane, Ujwala Tulshigiri and Nabil Zaman.
-=======
-# dmdedup4.19
