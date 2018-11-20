@@ -593,6 +593,148 @@ static int handle_write(struct dedup_config *dc, struct bio *bio)
 	return 0;
 }
 
+static int handle_discard(struct dedup_config *dc, struct bio *bio)
+{
+	u64 lbn, pbn_val;
+	u32 vsize;
+	struct lbn_pbn_value lbnpbn_value;
+	int r, ret;
+
+	lbn = bio_lbn(dc, bio);
+	/* Get the pbn in LBN->PBN store for incoming LBN. */
+	r = dc->kvs_lbn_pbn->kvs_lookup(dc->kvs_lbn_pbn, (void *)&lbn,
+					sizeof(lbn), (void *)&lbnpbn_value,
+					&vsize);
+
+	if (r == -ENODATA) {
+		/* unable to find the entry in LBN->PBN store */
+		DMWARN("Discard request recevied for lbn whose LBN-PBN entry \
+		 is not present.");
+		do_io_remap_device(dc, bio);
+		goto out;
+	} else if (r == 0) {
+		/* Entry found in the LBN->PBN store */
+		pbn_val = lbnpbn_value.pbn;
+
+		/*
+		 * Decrement pbn's refocunt and if it becomes one then
+		 * forward discard request to
+		 * underlying block device.
+		 */
+		if (dc->mdops->get_refcount(dc->bmd, pbn_val) > 1) {
+			r = dc->kvs_lbn_pbn->kvs_delete(dc->kvs_lbn_pbn,
+							(void *)&lbn,
+							sizeof(lbn));
+			if (r < 0) {
+				DMDEBUG("Failed to delete LBN-PBN entry for \
+				 pbn_val :%llu", pbn_val);
+				goto out;
+			}
+			r = dc->mdops->dec_refcount(dc->bmd, pbn_val);
+			if (r < 0)
+				goto out_dec_refcount;
+
+			dc->physical_block_counter -= 1;
+		}
+		if (dc->mdops->get_refcount(dc->bmd, pbn_val) == 1)
+			do_io(dc, bio, pbn_val);
+		goto out;
+	} else {
+		goto out;
+	}
+out_dec_refcount:
+	ret = dc->kvs_lbn_pbn->kvs_insert(dc->kvs_lbn_pbn, (void *)&lbn,
+					sizeof(lbn), (void *)&lbnpbn_value,
+					sizeof(lbnpbn_value));
+	if (ret < 0)
+		DMERR("Error in inserting previously inserted lbn pbn entry");
+out:
+	return r;
+}
+
+/*
+ * Handles discard request by clearing LBN-PBN mapping and
+ * decrementing refcount of pbn. If refcount reaches one that
+ * means only hash-pbn mapping is present which will be cleaned
+ * up at garbage collection time.
+ *
+ * Returns -ERR on failure
+ * Returns 0 on success
+ */
+static int handle_discard(struct dedup_config *dc, struct bio *bio)
+{
+	u64 lbn, pbn_val;
+	u32 vsize;
+	struct lbn_pbn_value lbnpbn_value;
+	int r, ret;
+
+	lbn = bio_lbn(dc, bio);
+	DMWARN("Discard request received for LBN :%llu", lbn);
+
+	/* Get the pbn from LBN->PBN store for requested LBN. */
+	r = dc->kvs_lbn_pbn->kvs_lookup(dc->kvs_lbn_pbn, (void *)&lbn,
+					sizeof(lbn), (void *)&lbnpbn_value,
+					&vsize);
+	if (r == -ENODATA) {
+		/*
+ 		 * Entry not present in LBN->PBN store hence need to forward
+ 		 * the discard request to underlying block layer without
+ 		 * remapping with pbn.
+ 		 */
+		DMWARN("Discard request received for lbn [%llu] whose LBN-PBN entry"
+		" is not present.", lbn);
+		do_io_remap_device(dc, bio);
+		goto out;
+	}
+	if (r < 0)
+		goto out;
+
+	/* Entry found in the LBN->PBN store */
+	pbn_val = lbnpbn_value.pbn;
+
+	/*
+	 * Decrement pbn's refcount. If the refcount reaches one then forward discard
+	 * request to underlying block device.
+	 */
+	if (dc->mdops->get_refcount(dc->bmd, pbn_val) > 1) {
+		r = dc->kvs_lbn_pbn->kvs_delete(dc->kvs_lbn_pbn,
+						(void *)&lbn,
+						sizeof(lbn));
+		if (r < 0) {
+			DMERR("Failed to delete LBN-PBN entry for pbn_val :%llu",
+				pbn_val);
+			goto out;
+		}
+		r = dc->mdops->dec_refcount(dc->bmd, pbn_val);
+		if (r < 0) {
+			/*
+ 			 * If could not decrement refcount then need to revert
+ 			 * above deletion of lbn-pbn mapping.
+ 			 */
+			ret = dc->kvs_lbn_pbn->kvs_insert(dc->kvs_lbn_pbn,
+							(void *)&lbn,
+							sizeof(lbn),
+							(void *)&lbnpbn_value,
+							sizeof(lbnpbn_value));
+			goto out;
+		}
+
+		dc->physical_block_counter -= 1;
+	}
+	/*
+ 	 * If refcount reaches 1 then forward discard request to underlying
+ 	 * block layer else end bio request.
+ 	 */
+	if (dc->mdops->get_refcount(dc->bmd, pbn_val) == 1) {
+		do_io(dc, bio, pbn_val);
+	} else {
+		bio->bi_status = BLK_STS_OK;
+		bio_endio(bio);
+	}
+out:
+	return r;
+}
+
 /*
  * Processes block io requests and propagates negative error
  * code to block io status (BLK_STS_*).
@@ -606,6 +748,10 @@ static void process_bio(struct dedup_config *dc, struct bio *bio)
 		if (r == 0)
 			dc->writes_after_flush = 0;
 		do_io_remap_device(dc, bio);
+		return;
+	}
+	if (bio_op(bio) == REQ_OP_DISCARD) {
+		r = handle_discard(dc, bio);
 		return;
 	}
 
@@ -1131,10 +1277,8 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	ti->num_flush_bios = 1;
 	ti->flush_supported = true;
-
-	ti->num_flush_bios = 1;
-	ti->flush_supported = true;
-
+	ti->discards_supported = true;
+	ti->num_discard_bios = 1;
 	ti->private = dc;
 	return 0;
 
