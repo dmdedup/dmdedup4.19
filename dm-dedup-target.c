@@ -593,65 +593,6 @@ static int handle_write(struct dedup_config *dc, struct bio *bio)
 	return 0;
 }
 
-static int handle_discard(struct dedup_config *dc, struct bio *bio)
-{
-	u64 lbn, pbn_val;
-	u32 vsize;
-	struct lbn_pbn_value lbnpbn_value;
-	int r, ret;
-
-	lbn = bio_lbn(dc, bio);
-	/* Get the pbn in LBN->PBN store for incoming LBN. */
-	r = dc->kvs_lbn_pbn->kvs_lookup(dc->kvs_lbn_pbn, (void *)&lbn,
-					sizeof(lbn), (void *)&lbnpbn_value,
-					&vsize);
-
-	if (r == -ENODATA) {
-		/* unable to find the entry in LBN->PBN store */
-		DMWARN("Discard request recevied for lbn whose LBN-PBN entry \
-		 is not present.");
-		do_io_remap_device(dc, bio);
-		goto out;
-	} else if (r == 0) {
-		/* Entry found in the LBN->PBN store */
-		pbn_val = lbnpbn_value.pbn;
-
-		/*
-		 * Decrement pbn's refocunt and if it becomes one then
-		 * forward discard request to
-		 * underlying block device.
-		 */
-		if (dc->mdops->get_refcount(dc->bmd, pbn_val) > 1) {
-			r = dc->kvs_lbn_pbn->kvs_delete(dc->kvs_lbn_pbn,
-							(void *)&lbn,
-							sizeof(lbn));
-			if (r < 0) {
-				DMDEBUG("Failed to delete LBN-PBN entry for \
-				 pbn_val :%llu", pbn_val);
-				goto out;
-			}
-			r = dc->mdops->dec_refcount(dc->bmd, pbn_val);
-			if (r < 0)
-				goto out_dec_refcount;
-
-			dc->physical_block_counter -= 1;
-		}
-		if (dc->mdops->get_refcount(dc->bmd, pbn_val) == 1)
-			do_io(dc, bio, pbn_val);
-		goto out;
-	} else {
-		goto out;
-	}
-out_dec_refcount:
-	ret = dc->kvs_lbn_pbn->kvs_insert(dc->kvs_lbn_pbn, (void *)&lbn,
-					sizeof(lbn), (void *)&lbnpbn_value,
-					sizeof(lbnpbn_value));
-	if (ret < 0)
-		DMERR("Error in inserting previously inserted lbn pbn entry");
-out:
-	return r;
-}
-
 /*
  * Handles discard request by clearing LBN-PBN mapping and
  * decrementing refcount of pbn. If refcount reaches one that
