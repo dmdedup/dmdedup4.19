@@ -75,7 +75,7 @@ static uint64_t bio_lbn(struct dedup_config *dc, struct bio *bio)
 /* Entry point to the generic block layer. */
 static void do_io_remap_device(struct dedup_config *dc, struct bio *bio)
 {
-	bio->bi_bdev = dc->data_dev->bdev;
+	bio_set_dev(bio, dc->data_dev->bdev);
 	generic_make_request(bio);
 }
 
@@ -141,7 +141,7 @@ static int handle_read(struct dedup_config *dc, struct bio *bio)
 		 * where we call bio_endio on original bio
 		 * after corruption checks are done
 		 */
-		clone = bio_clone_fast(bio, GFP_NOIO, dc->bs);
+		clone = bio_clone_fast(bio, GFP_NOIO, &dc->bs);
 		if (!clone) {
 			r = -ENOMEM;
 			goto out_clone_fail;
@@ -980,8 +980,8 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	}
 
 	/* Do we need to add BIOSET_NEED_RESCURE in the flags passed in bioset_create as well? */
-	dc->bs = bioset_create(MIN_IOS, 0, BIOSET_NEED_BVECS);
-	if (!dc->bs) {
+	r = bioset_init(&dc->bs, MIN_IOS, 0, BIOSET_NEED_BVECS);
+	if (r) {
 		ti->error = "failed to create bioset";
 		r = -ENOMEM;
 		goto bad_bs;
@@ -991,7 +991,7 @@ static int dm_dedup_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	if (!wq) {
 		ti->error = "failed to create workqueue";
 		r = -ENOMEM;
-		goto bad_wq;
+		goto bad_bs;
 	}
 
 	dedup_work_pool = mempool_create_kmalloc_pool(MIN_DEDUP_WORK_IO,
@@ -1150,8 +1150,6 @@ bad_check_mempool:
 	mempool_destroy(dedup_work_pool);
 bad_dedup_mempool:
 	destroy_workqueue(wq);
-bad_wq:
-	kfree(dc->bs);
 bad_bs:
 	kfree(dc);
 out:
@@ -1310,7 +1308,8 @@ static int garbage_collect(struct dedup_config *dc)
  * Returns 0 on success.
  */
 static int dm_dedup_message(struct dm_target *ti,
-			    unsigned int argc, char **argv)
+			    unsigned int argc, char **argv,
+			    char *result, unsigned maxlen)
 {
 	int r = 0;
 
