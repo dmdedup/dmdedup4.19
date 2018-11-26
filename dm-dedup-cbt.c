@@ -37,6 +37,10 @@
 #define DM_DEDUP_MAGIC 0x44447570 /* Hex value for "DDUP" */
 #define DM_DEDUP_VERSION 1
 #define SUPERBLOCK_CSUM_XOR 189575
+
+bool err_inject_on = false;
+uint32_t err_inject_bitmap = 0x02;
+
 struct metadata {
 	struct dm_block_manager *meta_bm;
 	struct dm_transaction_manager *tm;
@@ -554,11 +558,23 @@ static int alloc_data_block_cowbtree(struct metadata *md, uint64_t *blockn)
 
 static int inc_refcount_cowbtree(struct metadata *md, uint64_t blockn)
 {
+	if(err_inject_on == true){
+		if (err_inject_bitmap & __INJ_ERR_INC_REFCNT__) {
+			DMWARN("Injected inc refcount called");
+			return -EINVAL;
+		}
+	}
 	return dm_sm_inc_block(md->data_sm, blockn);
 }
 
 static int dec_refcount_cowbtree(struct metadata *md, uint64_t blockn)
 {
+	if(err_inject_on == true){
+		if (err_inject_bitmap & __INJ_ERR_DEC_REFCNT__) {
+			DMWARN("Injected dec refcount called");
+			return -EINVAL;
+		}
+	}
 	return dm_sm_dec_block(md->data_sm, blockn);
 }
 
@@ -601,9 +617,17 @@ bool is_deleted_entry(const char *ptr, uint32_t length)
 static int kvs_delete_linear_cowbtree(struct kvstore *kvs,
 			       void *key, int32_t ksize)
 {
+	static int err_cnt = 0;
 	int r;
 	struct kvstore_cbt_linear *kvcbt = NULL;
 
+	if(err_inject_on == true){
+		if ((err_inject_bitmap & __INJ_ERR_KVS_DEL_LINEAR_BTREE__) &&
+			(err_cnt++ % 5 == 0)) {
+			DMWARN("Injected delete linear called");
+			return -EINVAL;
+		}
+	}
 	kvcbt = container_of(kvs, struct kvstore_cbt_linear, ckvs);
 
 	if (ksize != kvs->ksize)
@@ -649,9 +673,17 @@ static int kvs_insert_linear_cowbtree(struct kvstore *kvs, void *key,
 			       s32 ksize, void *value,
 			       int32_t vsize)
 {
+	static int err_cnt = 0;
 	int inserted;
 	struct kvstore_cbt_linear *kvcbt = NULL;
 
+	if(err_inject_on == true) {
+		if ((err_inject_bitmap & __INJ_ERR_KVS_INS_LINEAR_BTREE__) &&
+			(err_cnt++ % 5 == 0)) {
+			DMWARN("Injected insert linear called");
+			return -EINVAL;
+		}
+	}
 	kvcbt = container_of(kvs, struct kvstore_cbt_linear, ckvs);
 
 	if (ksize != kvs->ksize)
@@ -777,11 +809,19 @@ static int kvs_delete_entry(struct kvstore_cbt_sparse *kvcbt,
 static int kvs_delete_sparse_cowbtree(struct kvstore *kvs,
 				      void *key, int32_t ksize)
 {
+	static int err_cnt = 0;
 	char *cur_entry, *next_entry;
 	u64 key_val, cur_key_val;
 	int r = 0;
 	struct kvstore_cbt_sparse *kvcbt = NULL;
 
+	if(err_inject_on == true){
+		if ((err_inject_bitmap & __INJ_ERR_KVS_DEL_SPARSE_BTREE__) &&
+			(err_cnt++ % 5 == 0)){
+			DMWARN("Injected delete sparse called");
+			return -EINVAL;
+		}
+	}
 	kvcbt = container_of(kvs, struct kvstore_cbt_sparse, ckvs);
 
 	if (ksize != kvs->ksize)

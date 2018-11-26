@@ -50,6 +50,8 @@
 
 #define MIN_DEDUP_WORK_IO	16
 
+extern bool err_inject_on;
+extern uint32_t err_inject_bitmap;
 /* Per target instance structure */
 struct dedup_config {
 	struct dm_dev *data_dev;

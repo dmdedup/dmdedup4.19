@@ -180,8 +180,16 @@ out:
  */
 int allocate_block(struct dedup_config *dc, uint64_t *pbn_new)
 {
+	static bool injected = false;
 	int r;
 
+	if(err_inject_on == true) {
+		if ((err_inject_bitmap & __INJ_ERR_ALLOC_BLK__) && !injected) {
+			DMWARN("Injected alloc block called");
+			injected = true;
+			return -ENOMEM;
+		}
+	}
 	r = dc->mdops->alloc_data_block(dc->bmd, pbn_new);
 
 	if (!r) {
@@ -1344,6 +1352,9 @@ static int dm_dedup_message(struct dm_target *ti,
                 } else {
                         r = -EINVAL;
                 }
+	} else if(!strcasecmp(argv[0], "err_inject_on")) {
+		DMINFO("Inject error");
+		err_inject_on = true;
 	} else {
 		r = -EINVAL;
 	}

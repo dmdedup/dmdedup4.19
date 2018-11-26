@@ -37,8 +37,18 @@
 
 #define MAX_LINEAR_PROBING_LIMIT 5
 
+#define __INJ_ERR_ALLOC_BLK__ 0x01
+#define __INJ_ERR_KVS_INS_LINEAR_BTREE__ 0x02
+#define __INJ_ERR_KVS_DEL_LINEAR_BTREE__ 0x04
+#define __INJ_ERR_KVS_INS_SPARSE_BTREE__ 0x08
+#define __INJ_ERR_KVS_DEL_SPARSE_BTREE__ 0x10
+#define __INJ_ERR_INC_REFCNT__ 0x20
+#define __INJ_ERR_DEC_REFCNT__ 0x40
+
 extern struct metadata_ops metadata_ops_cowbtree;
 
+extern uint32_t err_inject_bitmap;
+extern bool err_inject_on;
 struct init_param_cowbtree {
 	struct block_device *metadata_bdev;
 	u64 blocks;
