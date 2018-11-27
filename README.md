@@ -171,6 +171,21 @@ The message to disable both Corruption Check and Forward Error Correction mode:
 	dmsetup message <dedup_instance> 0 corruption 0
 ```
 
+Trim Support
+================
+Trim/discard support is very crucial for SSD as well as SCSI disks these days. Hence we have added support for trim/unmap/discard in our mapper device. It discards the blocks which are already deleted and have reference count <= 1. On receiving a discard request, we decrement reference count for that lbn. If reference count reaches 1, it means we can discard that block since it is not being referenced by anyone and hence we forward the discard request to the underlying block device layer. After forwarding request to underlying block device layer it discards those blocks. 
+
+There are many standard utilities available to issue trim command like fstrim and also these requests can be sent at the time of formatting the disk using mkfs utility. 
+
+To discard all unreferenced blocks on mountpoint 
+```
+sudo fstrim -v /mnt/dedup_mnt
+```
+
+To discard blocks while formatting disk using mkfs utitlity.
+```
+mkfs.ext4 -E discard /dev/mapper/mydedup
+```
 
 Target Size
 ======================
